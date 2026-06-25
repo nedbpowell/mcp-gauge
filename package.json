@@ -5,7 +5,7 @@
   "author": "Ned Powell <nedbaynepowell@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ned/mcp-gauge"
+    "url": "https://github.com/nedbpowell/mcp-gauge"
   },
   "main": "dist/index.js",
   "bin": {
