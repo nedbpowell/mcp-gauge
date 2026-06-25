@@ -1,0 +1,15 @@
+import { PersistedData, ClaudeConfig, ServerConfig } from './types.js';
+export declare function getClaudeConfigPath(): string;
+export declare function readClaudeConfig(): ClaudeConfig;
+export declare function writeClaudeConfig(config: ClaudeConfig): void;
+export declare function backupClaudeConfig(): void;
+export declare function restoreClaudeConfig(): void;
+export declare function readPersistedData(): PersistedData;
+export declare function writePersistedData(data: PersistedData): void;
+export declare function toolKey(serverName: string, toolName: string): string;
+export declare function incrementCallCount(serverName: string, toolName: string): void;
+export declare function setToolDisabled(serverName: string, toolName: string, disabled: boolean): void;
+export declare function readLaunchConfig(): Record<string, ServerConfig>;
+export declare function writeLaunchConfig(upstreamConfigs: Record<string, ServerConfig>): void;
+export declare function readPort(): number;
+export declare function writePort(port: number): void;

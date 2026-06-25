@@ -1,0 +1,175 @@
+/**
+ * mcp-gauge init / uninstall
+ *
+ * init:
+ *   - Reads the existing Claude Desktop config
+ *   - Replaces all MCP servers with the proxy entry (backing up first)
+ *   - Safe to re-run: picks up any newly added servers
+ *
+ * uninstall:
+ *   - Rebuilds the config from the backup + the full launch.json server list,
+ *     so servers added after the initial install are not lost
+ */
+
+import fs from 'fs';
+import path from 'path';
+import { execSync } from 'child_process';
+import chalk from 'chalk';
+import {
+  readClaudeConfig,
+  writeClaudeConfig,
+  backupClaudeConfig,
+  getClaudeConfigPath,
+  readLaunchConfig,
+  writeLaunchConfig,
+} from '../store.js';
+import { ClaudeConfig, ServerConfig } from '../types.js';
+
+const PROXY_SERVER_NAME = '__mcp_gauge_proxy__';
+
+export function runInit(): void {
+  console.log(chalk.bold('\n⚡ mcp-gauge init\n'));
+
+  // ── 1. Read existing config ──────────────────────────────────────────────
+  let config: ClaudeConfig;
+  try {
+    config = readClaudeConfig();
+  } catch (err) {
+    console.error(chalk.red(`✗ ${err}`));
+    process.exit(1);
+  }
+
+  const servers = config.mcpServers ?? {};
+  const serverNames = Object.keys(servers).filter(n => n !== PROXY_SERVER_NAME);
+
+  // ── 2. Already installed — pick up any newly added servers ───────────────
+  if (servers[PROXY_SERVER_NAME]) {
+    const existingLaunch = readLaunchConfig();
+    const newServers = serverNames.filter(n => !existingLaunch[n]);
+
+    if (newServers.length === 0) {
+      console.log(chalk.yellow('mcp-gauge is already installed and up to date.'));
+      console.log('Run ' + chalk.cyan('mcp-gauge status') + ' to see your token budget.\n');
+      process.exit(0);
+    }
+
+    // Add new servers to launch config
+    const updatedLaunch: Record<string, ServerConfig> = { ...existingLaunch };
+    newServers.forEach(name => { updatedLaunch[name] = servers[name]; });
+    writeLaunchConfig(updatedLaunch);
+
+    // Remove the now-proxied servers from mcpServers so they don't appear
+    // both directly connected AND via the proxy (which would cause duplicates)
+    const updatedConfig: ClaudeConfig = {
+      ...config,
+      mcpServers: { [PROXY_SERVER_NAME]: servers[PROXY_SERVER_NAME] },
+    };
+    writeClaudeConfig(updatedConfig);
+
+    console.log(chalk.green(`✓ Added ${newServers.length} new server(s) to mcp-gauge:\n`));
+    newServers.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
+    console.log(`\nRestart Claude Desktop to pick up the new server(s).\n`);
+    process.exit(0);
+  }
+
+  if (serverNames.length === 0) {
+    console.log(chalk.yellow('No MCP servers found in your Claude Desktop config.'));
+    console.log('Add some servers first, then run mcp-gauge init again.\n');
+    process.exit(0);
+  }
+
+  console.log(`Found ${chalk.bold(serverNames.length)} MCP server(s):\n`);
+  serverNames.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
+  console.log();
+
+  // ── 3. Verify mcp-gauge is globally installed ────────────────────────────
+  // npx caches packages in a temporary directory that gets cleared automatically.
+  // If we bake that path into the Claude config, the proxy stops working when
+  // the cache expires. Require a global install instead.
+  let gaugeCommand: string;
+  try {
+    gaugeCommand = execSync('which mcp-gauge', { encoding: 'utf-8' }).trim();
+  } catch {
+    console.error(chalk.red('✗ mcp-gauge must be installed globally to work correctly.\n'));
+    console.log('  Running via npx bakes a temporary cache path into your Claude config,');
+    console.log('  which breaks the proxy when the cache is cleared.\n');
+    console.log('  Install globally first:\n');
+    console.log('    ' + chalk.cyan('npm install -g mcp-gauge') + '\n');
+    console.log('  Then run: ' + chalk.cyan('mcp-gauge init') + '\n');
+    process.exit(1);
+  }
+
+  // ── 4. Backup original config ────────────────────────────────────────────
+  backupClaudeConfig();
+  console.log(chalk.dim(`✓ Backed up original config to ~/.mcp-gauge/claude_config_backup.json`));
+
+  // ── 5. Write launch config (upstream server list, read by proxy at start) ─
+  const upstreamConfigs: Record<string, ServerConfig> = {};
+  serverNames.forEach(name => { upstreamConfigs[name] = servers[name]; });
+  writeLaunchConfig(upstreamConfigs);
+
+  // ── 6. Rewrite config — merge so other top-level keys are preserved ───────
+  const proxyEntry: ServerConfig = {
+    command: gaugeCommand,
+    args: ['proxy'],
+  };
+
+  const newConfig: ClaudeConfig = {
+    ...config,                       // preserves globalShortcut, theme, etc.
+    mcpServers: {
+      [PROXY_SERVER_NAME]: proxyEntry,
+    },
+  };
+
+  writeClaudeConfig(newConfig);
+
+  // ── 7. Done ───────────────────────────────────────────────────────────────
+  console.log(chalk.green('\n✓ mcp-gauge installed successfully!\n'));
+  console.log('What happens next:');
+  console.log(`  1. ${chalk.bold('Restart Claude Desktop')} — the proxy starts automatically`);
+  console.log(`  2. Run ${chalk.cyan('mcp-gauge status')} to find your dashboard URL`);
+  console.log(`  3. Disable unused tools with one click\n`);
+  console.log(chalk.dim(`To add new servers later: add them in Claude Desktop, then re-run ${chalk.white('mcp-gauge init')}`));
+  console.log(chalk.dim(`To uninstall: ${chalk.white('mcp-gauge uninstall')}\n`));
+}
+
+export function runUninstall(): void {
+  console.log(chalk.bold('\nmcp-gauge uninstall\n'));
+
+  const backupPath = path.join(
+    process.env.HOME ?? '~',
+    '.mcp-gauge',
+    'claude_config_backup.json'
+  );
+
+  if (!fs.existsSync(backupPath)) {
+    console.error(chalk.red('✗ No backup found. Cannot restore original config.'));
+    process.exit(1);
+  }
+
+  // Rebuild from backup + full launch.json server list.
+  // The backup only has servers that existed at init time; launch.json has
+  // everything including servers added later via `mcp-gauge init` re-runs.
+  // Using launch.json ensures servers added after the initial install survive.
+  let backup: ClaudeConfig;
+  try {
+    backup = JSON.parse(fs.readFileSync(backupPath, 'utf-8')) as ClaudeConfig;
+  } catch {
+    console.error(chalk.red('✗ Backup file is corrupt. Cannot restore.'));
+    process.exit(1);
+  }
+
+  const allServers = readLaunchConfig();
+
+  const restored: ClaudeConfig = {
+    ...backup,
+    mcpServers: Object.keys(allServers).length > 0
+      ? allServers
+      : backup.mcpServers,   // fall back to backup if launch.json is missing/empty
+  };
+
+  fs.writeFileSync(getClaudeConfigPath(), JSON.stringify(restored, null, 2), 'utf-8');
+
+  console.log(chalk.green('✓ Restored original Claude Desktop config.'));
+  console.log('Restart Claude Desktop to reconnect directly to your MCP servers.\n');
+}
