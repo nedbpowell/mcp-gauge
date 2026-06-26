@@ -7,6 +7,7 @@ export interface ClaudeConfig {
     mcpServers: Record<string, ServerConfig>;
     [key: string]: unknown;
 }
+export type ClientName = 'claude' | 'codex';
 export interface ToolDefinition {
     name: string;
     description?: string;

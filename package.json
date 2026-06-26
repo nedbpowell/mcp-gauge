@@ -1,6 +1,7 @@
 {
   "name": "mcp-gauge",
   "version": "0.1.0",
+  "type": "module",
   "description": "See exactly which MCP tools are eating your context window. Disable the deadweight.",
   "author": "Ned Powell <nedbaynepowell@gmail.com>",
   "repository": {
@@ -21,7 +22,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "ts-node src/index.ts"
+    "dev": "node --loader ts-node/esm src/index.ts"
   },
   "keywords": ["mcp", "claude", "context", "tokens", "tools"],
   "license": "MIT",

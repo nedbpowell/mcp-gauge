@@ -11,6 +11,8 @@ export interface ClaudeConfig {
   [key: string]: unknown; // preserve other top-level keys (globalShortcut, theme, etc.)
 }
 
+export type ClientName = 'claude' | 'codex';
+
 // One MCP tool as reported by a server
 export interface ToolDefinition {
   name: string;

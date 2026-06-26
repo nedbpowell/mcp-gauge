@@ -1,44 +1,36 @@
-"use strict";
 /**
  * MCP Proxy Server
  *
  * Architecture:
- *   Claude Code  ──stdio──►  THIS PROXY  ──stdio──►  real MCP server 1
- *                                        ──stdio──►  real MCP server 2
- *                                        ──stdio──►  real MCP server N
+ *   MCP client  ──stdio──►  THIS PROXY  ──stdio──►  real MCP server 1
+ *                                       ──stdio──►  real MCP server 2
+ *                                       ──stdio──►  real MCP server N
  *
  * The proxy:
  *  1. Spawns each real server as a child process
  *  2. Intercepts tools/list responses to measure token cost
- *  3. Filters out disabled tools before returning to Claude Code
+ *  3. Filters out disabled tools before returning to the client
  *  4. Intercepts tools/call requests to log usage
  *  5. Pushes state updates to the dashboard via WebSocket
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.stateEmitter = void 0;
-exports.getBudgetState = getBudgetState;
-exports.startProxy = startProxy;
-exports.updateToolState = updateToolState;
-const index_js_1 = require("@modelcontextprotocol/sdk/server/index.js");
-const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
-const index_js_2 = require("@modelcontextprotocol/sdk/client/index.js");
-const stdio_js_2 = require("@modelcontextprotocol/sdk/client/stdio.js");
-const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
-const events_1 = __importDefault(require("events"));
-const tokens_js_1 = require("../tokens.js");
-const store_js_1 = require("../store.js");
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ListToolsRequestSchema, CallToolRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
+import EventEmitter from 'events';
+import { createRequire } from 'module';
+import { measureToolCost } from '../tokens.js';
+import { readPersistedData, incrementCallCount, toolKey, } from '../store.js';
+const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../../package.json');
 // ─── State ────────────────────────────────────────────────────────────────────
 // Shared in-memory state — the dashboard reads this via the state emitter
 const serverStats = new Map();
-exports.stateEmitter = new events_1.default();
+export const stateEmitter = new EventEmitter();
 const MODEL_LIMIT = 200_000; // Claude's context window
 const SESSION_STARTED = new Date();
-function getBudgetState() {
+export function getBudgetState() {
     const servers = Array.from(serverStats.values());
     const totalTokens = servers.reduce((sum, s) => sum + s.totalTokens, 0);
     const activeTokens = servers.reduce((sum, s) => {
@@ -57,23 +49,23 @@ function getBudgetState() {
     };
 }
 function emitStateUpdate() {
-    exports.stateEmitter.emit('update', getBudgetState());
+    stateEmitter.emit('update', getBudgetState());
 }
 async function connectToServer(serverName, config) {
     const mergedEnv = Object.fromEntries(Object.entries({ ...process.env, ...config.env }).filter(([, v]) => v !== undefined));
-    const transport = new stdio_js_2.StdioClientTransport({
+    const transport = new StdioClientTransport({
         command: config.command,
         args: config.args,
         env: mergedEnv,
     });
-    const client = new index_js_2.Client({ name: 'mcp-gauge-proxy', version: PKG_VERSION }, { capabilities: {} });
+    const client = new Client({ name: 'mcp-gauge-proxy', version: PKG_VERSION }, { capabilities: {} });
     await client.connect(transport);
     // Fetch tool list immediately and measure token costs
     await refreshServerTools(serverName, client);
     return { client, serverName };
 }
 async function refreshServerTools(serverName, client) {
-    const persisted = (0, store_js_1.readPersistedData)();
+    const persisted = readPersistedData();
     let tools = [];
     try {
         const result = await client.listTools();
@@ -93,8 +85,8 @@ async function refreshServerTools(serverName, client) {
     }
     // Measure each tool's token cost concurrently
     const trackedTools = await Promise.all(tools.map(async (tool) => {
-        const key = (0, store_js_1.toolKey)(serverName, tool.name);
-        const tokenCost = await (0, tokens_js_1.measureToolCost)({
+        const key = toolKey(serverName, tool.name);
+        const tokenCost = await measureToolCost({
             name: tool.name,
             description: tool.description,
             inputSchema: tool.inputSchema,
@@ -129,7 +121,7 @@ async function refreshServerTools(serverName, client) {
     emitStateUpdate();
 }
 // ─── The proxy server itself ──────────────────────────────────────────────────
-async function startProxy(serverConfigs) {
+export async function startProxy(serverConfigs) {
     // Connect to all real servers in parallel
     const connections = new Map();
     await Promise.allSettled(Object.entries(serverConfigs).map(async ([name, config]) => {
@@ -151,15 +143,15 @@ async function startProxy(serverConfigs) {
         }
     }));
     // Create the proxy MCP server (this is what Claude Code talks to)
-    const server = new index_js_1.Server({ name: 'mcp-gauge', version: PKG_VERSION }, {
+    const server = new Server({ name: 'mcp-gauge', version: PKG_VERSION }, {
         capabilities: {
             tools: {},
         },
     });
     // ── tools/list ──────────────────────────────────────────────────────────────
     // Aggregate tools from all servers, filter disabled ones, return to Claude
-    server.setRequestHandler(types_js_1.ListToolsRequestSchema, async () => {
-        const persisted = (0, store_js_1.readPersistedData)();
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
+        const persisted = readPersistedData();
         // Build a routing table: toolName -> serverName
         // Detect collisions across servers
         const nameCount = new Map();
@@ -168,7 +160,7 @@ async function startProxy(serverConfigs) {
             if (!stats)
                 continue;
             for (const tracked of stats.tools) {
-                const key = (0, store_js_1.toolKey)(serverName, tracked.name);
+                const key = toolKey(serverName, tracked.name);
                 if (persisted.disabledTools[key])
                     continue;
                 nameCount.set(tracked.name, (nameCount.get(tracked.name) ?? 0) + 1);
@@ -180,7 +172,7 @@ async function startProxy(serverConfigs) {
             if (!stats)
                 continue;
             for (const tracked of stats.tools) {
-                const key = (0, store_js_1.toolKey)(serverName, tracked.name);
+                const key = toolKey(serverName, tracked.name);
                 if (persisted.disabledTools[key])
                     continue;
                 // Only namespace if there's a collision
@@ -199,7 +191,7 @@ async function startProxy(serverConfigs) {
     });
     // ── tools/call ──────────────────────────────────────────────────────────────
     // Route the call to the correct upstream server, log usage
-    server.setRequestHandler(types_js_1.CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { name: incomingName, arguments: args } = request.params;
         // Determine serverName and toolName
         // Could be namespaced (collision case) or plain (no collision)
@@ -227,7 +219,7 @@ async function startProxy(serverConfigs) {
         if (!conn) {
             throw new Error(`Server not connected: ${serverName}`);
         }
-        (0, store_js_1.incrementCallCount)(serverName, toolName);
+        incrementCallCount(serverName, toolName);
         const stats = serverStats.get(serverName);
         if (stats) {
             const tool = stats.tools.find((t) => t.name === toolName);
@@ -241,12 +233,12 @@ async function startProxy(serverConfigs) {
         return conn.client.callTool({ name: toolName, arguments: args ?? {} });
     });
     // Start accepting connections from Claude Code over stdio
-    const transport = new stdio_js_1.StdioServerTransport();
+    const transport = new StdioServerTransport();
     await server.connect(transport);
     process.stderr.write('[mcp-gauge] Proxy running\n');
 }
 // ─── Live tool toggle (called by dashboard) ───────────────────────────────────
-function updateToolState(serverName, toolName, disabled) {
+export function updateToolState(serverName, toolName, disabled) {
     const stats = serverStats.get(serverName);
     if (!stats)
         return;

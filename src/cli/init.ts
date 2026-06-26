@@ -2,7 +2,7 @@
  * mcp-gauge init / uninstall
  *
  * init:
- *   - Reads the existing Claude Desktop config
+ *   - Reads the existing client config
  *   - Replaces all MCP servers with the proxy entry (backing up first)
  *   - Safe to re-run: picks up any newly added servers
  *
@@ -16,20 +16,35 @@ import path from 'path';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
 import {
+  backupCodexConfig,
   readClaudeConfig,
+  readCodexConfigText,
+  readCodexStdioServers,
   writeClaudeConfig,
+  writeCodexConfigText,
   backupClaudeConfig,
+  codexServersToToml,
+  getCodexBackupPath,
   getClaudeConfigPath,
+  getCodexConfigPath,
   readLaunchConfig,
+  rewriteCodexMcpServers,
   writeLaunchConfig,
 } from '../store.js';
-import { ClaudeConfig, ServerConfig } from '../types.js';
+import { ClaudeConfig, ClientName, ServerConfig } from '../types.js';
 
 const PROXY_SERVER_NAME = '__mcp_gauge_proxy__';
 
-export function runInit(): void {
+export function runInit(client: ClientName = detectClient()): void {
   console.log(chalk.bold('\n⚡ mcp-gauge init\n'));
+  if (client === 'codex') {
+    runCodexInit();
+    return;
+  }
+  runClaudeInit();
+}
 
+function runClaudeInit(): void {
   // ── 1. Read existing config ──────────────────────────────────────────────
   let config: ClaudeConfig;
   try {
@@ -133,9 +148,83 @@ export function runInit(): void {
   console.log(chalk.dim(`To uninstall: ${chalk.white('mcp-gauge uninstall')}\n`));
 }
 
-export function runUninstall(): void {
-  console.log(chalk.bold('\nmcp-gauge uninstall\n'));
+function runCodexInit(): void {
+  let configText: string;
+  try {
+    configText = readCodexConfigText();
+  } catch (err) {
+    console.error(chalk.red(`✗ ${err}`));
+    process.exit(1);
+  }
 
+  const servers = readCodexStdioServers(configText);
+  const serverNames = Object.keys(servers).filter(n => n !== PROXY_SERVER_NAME);
+
+  if (servers[PROXY_SERVER_NAME]) {
+    const existingLaunch = readLaunchConfig();
+    const newServers = serverNames.filter(n => !existingLaunch[n]);
+
+    if (newServers.length === 0) {
+      console.log(chalk.yellow('mcp-gauge is already installed and up to date.'));
+      console.log('Run ' + chalk.cyan('mcp-gauge status') + ' to see your token budget.\n');
+      process.exit(0);
+    }
+
+    const updatedLaunch: Record<string, ServerConfig> = { ...existingLaunch };
+    newServers.forEach(name => { updatedLaunch[name] = servers[name]; });
+    writeLaunchConfig(updatedLaunch);
+
+    writeCodexConfigText(rewriteCodexMcpServers(configText, newServers, servers[PROXY_SERVER_NAME]));
+
+    console.log(chalk.green(`✓ Added ${newServers.length} new server(s) to mcp-gauge:\n`));
+    newServers.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
+    console.log(`\nRestart Codex to pick up the new server(s).\n`);
+    process.exit(0);
+  }
+
+  if (serverNames.length === 0) {
+    console.log(chalk.yellow('No local MCP servers found in your Codex config.'));
+    console.log('Add a stdio MCP server first, then run mcp-gauge init --client codex again.\n');
+    process.exit(0);
+  }
+
+  console.log(`Found ${chalk.bold(serverNames.length)} local MCP server(s):\n`);
+  serverNames.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
+  console.log();
+
+  const gaugeCommand = findGlobalGaugeCommand('Codex config');
+
+  backupCodexConfig();
+  console.log(chalk.dim(`✓ Backed up original config to ~/.mcp-gauge/codex_config_backup.toml`));
+
+  const upstreamConfigs: Record<string, ServerConfig> = {};
+  serverNames.forEach(name => { upstreamConfigs[name] = servers[name]; });
+  writeLaunchConfig(upstreamConfigs);
+
+  writeCodexConfigText(rewriteCodexMcpServers(configText, serverNames, {
+    command: gaugeCommand,
+    args: ['proxy'],
+  }));
+
+  console.log(chalk.green('\n✓ mcp-gauge installed successfully!\n'));
+  console.log('What happens next:');
+  console.log(`  1. ${chalk.bold('Restart Codex')} — the proxy starts automatically`);
+  console.log(`  2. Run ${chalk.cyan('mcp-gauge status')} to find your dashboard URL`);
+  console.log(`  3. Disable unused tools with one click\n`);
+  console.log(chalk.dim(`To add new local servers later: add them in Codex, then re-run ${chalk.white('mcp-gauge init --client codex')}`));
+  console.log(chalk.dim(`To uninstall: ${chalk.white('mcp-gauge uninstall --client codex')}\n`));
+}
+
+export function runUninstall(client: ClientName = detectClient()): void {
+  console.log(chalk.bold('\nmcp-gauge uninstall\n'));
+  if (client === 'codex') {
+    runCodexUninstall();
+    return;
+  }
+  runClaudeUninstall();
+}
+
+function runClaudeUninstall(): void {
   const backupPath = path.join(
     process.env.HOME ?? '~',
     '.mcp-gauge',
@@ -172,4 +261,48 @@ export function runUninstall(): void {
 
   console.log(chalk.green('✓ Restored original Claude Desktop config.'));
   console.log('Restart Claude Desktop to reconnect directly to your MCP servers.\n');
+}
+
+function runCodexUninstall(): void {
+  const backupPath = getCodexBackupPath();
+
+  if (!fs.existsSync(backupPath)) {
+    console.error(chalk.red('✗ No backup found. Cannot restore original Codex config.'));
+    process.exit(1);
+  }
+
+  const backup = fs.readFileSync(backupPath, 'utf-8');
+  const allServers = readLaunchConfig();
+  const serverNames = Object.keys(allServers);
+  const restored = serverNames.length > 0
+    ? `${rewriteCodexMcpServers(backup, serverNames, null).replace(/\s+$/g, '')}\n\n${codexServersToToml(allServers)}\n`
+    : backup;
+
+  fs.writeFileSync(getCodexConfigPath(), restored, 'utf-8');
+
+  console.log(chalk.green('✓ Restored original Codex config.'));
+  console.log('Restart Codex to reconnect directly to your MCP servers.\n');
+}
+
+function findGlobalGaugeCommand(configName: string): string {
+  try {
+    return execSync('which mcp-gauge', { encoding: 'utf-8' }).trim();
+  } catch {
+    console.error(chalk.red('✗ mcp-gauge must be installed globally to work correctly.\n'));
+    console.log(`  Running via npx bakes a temporary cache path into your ${configName},`);
+    console.log('  which breaks the proxy when the cache is cleared.\n');
+    console.log('  Install globally first:\n');
+    console.log('    ' + chalk.cyan('npm install -g mcp-gauge') + '\n');
+    console.log('  Then run: ' + chalk.cyan('mcp-gauge init') + '\n');
+    process.exit(1);
+  }
+}
+
+function detectClient(): ClientName {
+  const claudeExists = fs.existsSync(getClaudeConfigPath());
+  const codexExists = fs.existsSync(getCodexConfigPath());
+
+  if (claudeExists) return 'claude';
+  if (codexExists) return 'codex';
+  return 'claude';
 }

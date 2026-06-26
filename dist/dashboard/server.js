@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Local dashboard server
  *
@@ -8,28 +7,23 @@
  * - Pushes live BudgetState updates over WebSocket
  * - Exposes a REST API for the dashboard to toggle tools
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.startDashboard = startDashboard;
-const express_1 = __importDefault(require("express"));
-const ws_1 = require("ws");
-const http_1 = __importDefault(require("http"));
-const net_1 = __importDefault(require("net"));
-const proxy_js_1 = require("../proxy/proxy.js");
-const store_js_1 = require("../store.js");
+import express from 'express';
+import { WebSocketServer, WebSocket } from 'ws';
+import http from 'http';
+import net from 'net';
+import { stateEmitter, getBudgetState, updateToolState } from '../proxy/proxy.js';
+import { setToolDisabled, writePort } from '../store.js';
 // ─── Port finding ─────────────────────────────────────────────────────────────
 function findAvailablePort(preferred) {
     return new Promise((resolve) => {
-        const probe = net_1.default.createServer();
+        const probe = net.createServer();
         probe.listen(preferred, '127.0.0.1', () => {
             const addr = probe.address();
             probe.close(() => resolve(addr.port));
         });
         probe.on('error', () => {
             // Preferred port is busy — ask the OS for any free port
-            const fallback = net_1.default.createServer();
+            const fallback = net.createServer();
             fallback.listen(0, '127.0.0.1', () => {
                 const addr = fallback.address();
                 fallback.close(() => resolve(addr.port));
@@ -351,15 +345,15 @@ function renderDashboard(port) {
 </html>`;
 }
 // ─── Server startup ───────────────────────────────────────────────────────────
-async function startDashboard(preferredPort = 3456) {
+export async function startDashboard(preferredPort = 3456) {
     const port = await findAvailablePort(preferredPort);
     if (port !== preferredPort) {
         process.stderr.write(`[mcp-gauge] Port ${preferredPort} in use, using ${port} instead\n`);
     }
     // Persist the actual port so `mcp-gauge status` can find it
-    (0, store_js_1.writePort)(port);
-    const app = (0, express_1.default)();
-    app.use(express_1.default.json());
+    writePort(port);
+    const app = express();
+    app.use(express.json());
     // Serve dashboard
     app.get('/', (_req, res) => {
         res.send(renderDashboard(port));
@@ -367,29 +361,29 @@ async function startDashboard(preferredPort = 3456) {
     // Toggle tool enabled/disabled
     app.post('/api/toggle', (req, res) => {
         const { serverName, toolName, disabled } = req.body;
-        (0, store_js_1.setToolDisabled)(serverName, toolName, disabled);
-        (0, proxy_js_1.updateToolState)(serverName, toolName, disabled);
+        setToolDisabled(serverName, toolName, disabled);
+        updateToolState(serverName, toolName, disabled);
         res.json({ ok: true });
     });
     // Current state snapshot (for `mcp-gauge status`)
     app.get('/api/state', (_req, res) => {
-        res.json((0, proxy_js_1.getBudgetState)());
+        res.json(getBudgetState());
     });
-    const httpServer = http_1.default.createServer(app);
+    const httpServer = http.createServer(app);
     // WebSocket for live state push
-    const wss = new ws_1.WebSocketServer({ server: httpServer, path: '/ws' });
+    const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
     const clients = new Set();
     wss.on('connection', (ws) => {
         clients.add(ws);
         // Send current state immediately on connect
-        ws.send(JSON.stringify((0, proxy_js_1.getBudgetState)()));
+        ws.send(JSON.stringify(getBudgetState()));
         ws.on('close', () => clients.delete(ws));
     });
     // Push state to all connected dashboard tabs on every update
-    proxy_js_1.stateEmitter.on('update', (state) => {
+    stateEmitter.on('update', (state) => {
         const payload = JSON.stringify(state);
         for (const client of clients) {
-            if (client.readyState === ws_1.WebSocket.OPEN) {
+            if (client.readyState === WebSocket.OPEN) {
                 client.send(payload);
             }
         }

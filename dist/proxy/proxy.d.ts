@@ -2,14 +2,14 @@
  * MCP Proxy Server
  *
  * Architecture:
- *   Claude Code  ──stdio──►  THIS PROXY  ──stdio──►  real MCP server 1
- *                                        ──stdio──►  real MCP server 2
- *                                        ──stdio──►  real MCP server N
+ *   MCP client  ──stdio──►  THIS PROXY  ──stdio──►  real MCP server 1
+ *                                       ──stdio──►  real MCP server 2
+ *                                       ──stdio──►  real MCP server N
  *
  * The proxy:
  *  1. Spawns each real server as a child process
  *  2. Intercepts tools/list responses to measure token cost
- *  3. Filters out disabled tools before returning to Claude Code
+ *  3. Filters out disabled tools before returning to the client
  *  4. Intercepts tools/call requests to log usage
  *  5. Pushes state updates to the dashboard via WebSocket
  */

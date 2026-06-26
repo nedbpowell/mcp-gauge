@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 import { program } from 'commander';
+import { createRequire } from 'module';
 import { runInit, runUninstall } from './cli/init.js';
 import { startProxy } from './proxy/proxy.js';
 import { startDashboard } from './dashboard/server.js';
 import { readLaunchConfig, readPort } from './store.js';
+import { ClientName } from './types.js';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+const require = createRequire(import.meta.url);
 const { version } = require('../package.json') as { version: string };
 
 program
@@ -17,24 +19,26 @@ program
 // ── mcp-gauge init ─────────────────────────────────────────────────────────────
 program
   .command('init')
-  .description('Install mcp-gauge into your Claude Desktop config')
-  .action(() => {
-    runInit();
+  .description('Install mcp-gauge into your Claude Desktop or Codex config')
+  .option('--client <client>', 'Target client: claude or codex')
+  .action((opts: { client?: ClientName }) => {
+    runInit(parseClientOption(opts.client));
   });
 
 // ── mcp-gauge uninstall ───────────────────────────────────────────────────────
 program
   .command('uninstall')
-  .description('Remove mcp-gauge and restore your original Claude Desktop config')
-  .action(() => {
-    runUninstall();
+  .description('Remove mcp-gauge and restore your original client config')
+  .option('--client <client>', 'Target client: claude or codex')
+  .action((opts: { client?: ClientName }) => {
+    runUninstall(parseClientOption(opts.client));
   });
 
 // ── mcp-gauge proxy ───────────────────────────────────────────────────────────
 // This is what Claude Code actually launches (not called by users directly)
 program
   .command('proxy')
-  .description('Start the MCP proxy (launched automatically by Claude Code)')
+  .description('Start the MCP proxy (launched automatically by your MCP client)')
   .option('--port <number>', 'Dashboard port (default: 3456, falls back to OS-assigned)')
   .action(async (opts: { port?: string }) => {
     const upstreamConfigs = readLaunchConfig();
@@ -62,7 +66,7 @@ program
     const port = readPort();
     const res = await fetch(`http://localhost:${port}/api/state`).catch(() => null);
     if (!res) {
-      console.error('mcp-gauge proxy is not running. Start Claude Code first.');
+      console.error('mcp-gauge proxy is not running. Start your MCP client first.');
       process.exit(1);
     }
     const state = await res.json() as {
@@ -90,3 +94,11 @@ program
   });
 
 program.parse();
+
+function parseClientOption(client?: string): ClientName | undefined {
+  if (client === undefined) return undefined;
+  if (client === 'claude' || client === 'codex') return client;
+
+  console.error(`Unknown client: ${client}. Expected "claude" or "codex".`);
+  process.exit(1);
+}
