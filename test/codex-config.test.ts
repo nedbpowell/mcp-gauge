@@ -277,6 +277,59 @@ url = "https://example.com/mcp"
   }
 });
 
+test('Codex usage-only init explains what changed and what was left alone', () => {
+  const previousHome = process.env.HOME;
+  const previousPath = process.env.PATH;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gauge-home-'));
+  process.env.HOME = home;
+  process.env.PATH = `${path.join(home, 'bin')}:${previousPath ?? ''}`;
+
+  const logs: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+  console.error = () => undefined;
+
+  try {
+    fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'bin', 'mcp-gauge'), '#!/bin/sh\n', { mode: 0o755 });
+
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.codex', 'config.toml'),
+      `
+[mcp_servers.remote]
+url = "https://example.com/mcp"
+`,
+      'utf-8'
+    );
+
+    runInit('codex');
+
+    const output = logs.join('\n');
+    assert.match(output, /Found Codex config:/);
+    assert.match(output, /No local stdio MCP servers found/);
+    assert.match(output, /HTTP MCP servers will be left untouched/);
+    assert.match(output, /Created backup: ~\/\.mcp-gauge\/clients\/codex\/config_backup\.toml/);
+    assert.match(output, /Codex usage tracking is ready/);
+    assert.match(output, /mcp-gauge status --client codex/);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('Codex uninstall restores from backup when launch state is missing', () => {
   const previousHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gauge-home-'));
@@ -319,6 +372,52 @@ args = ["proxy", "--client", "codex"]
     assert.match(restored, /\[mcp_servers\.local\]/);
     assert.match(restored, /command = "node"/);
     assert.doesNotMatch(restored, /__mcp_gauge_proxy__/);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('Codex uninstall falls back to backup when current config is missing', () => {
+  const previousHome = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gauge-home-'));
+  process.env.HOME = home;
+
+  const logs: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+  console.error = () => undefined;
+
+  try {
+    const backupDir = path.join(home, '.mcp-gauge', 'clients', 'codex');
+    fs.mkdirSync(backupDir, { recursive: true });
+
+    const originalConfig = `
+model = "gpt-5"
+
+[mcp_servers.local]
+command = "node"
+args = ["server.js"]
+`;
+    fs.writeFileSync(path.join(backupDir, 'config_backup.toml'), originalConfig, 'utf-8');
+    writeLaunchConfig({
+      local: { command: 'node', args: ['server.js'] },
+    }, 'codex');
+
+    runUninstall('codex');
+
+    const restored = fs.readFileSync(path.join(home, '.codex', 'config.toml'), 'utf-8');
+    assert.match(restored, /\[mcp_servers\.local\]/);
+    assert.match(restored, /command = "node"/);
+    assert.doesNotMatch(restored, /__mcp_gauge_proxy__/);
+    assert.match(logs.join('\n'), /Used backup: ~\/\.mcp-gauge\/clients\/codex\/config_backup\.toml/);
   } finally {
     console.log = originalLog;
     console.error = originalError;

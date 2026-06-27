@@ -17,6 +17,7 @@ import { execSync } from 'child_process';
 import chalk from 'chalk';
 import {
   backupCodexConfig,
+  getCodexBackupPath,
   readClaudeConfig,
   readCodexConfigText,
   readCodexStdioServers,
@@ -34,6 +35,7 @@ import {
 import { ClaudeConfig, ClientName, ServerConfig } from '../types.js';
 
 const PROXY_SERVER_NAME = '__mcp_gauge_proxy__';
+const CLAUDE_BACKUP_PATH = '~/.mcp-gauge/claude_config_backup.json';
 
 export function runInit(client: ClientName = detectClient()): void {
   console.log(chalk.bold('\n⚡ mcp-gauge init\n'));
@@ -54,6 +56,8 @@ function runClaudeInit(): void {
     process.exit(1);
   }
 
+  console.log(`Found Claude Desktop config: ${chalk.dim(displayPath(getClaudeConfigPath()))}`);
+
   const servers = config.mcpServers ?? {};
   const serverNames = Object.keys(servers).filter(n => n !== PROXY_SERVER_NAME);
 
@@ -64,7 +68,8 @@ function runClaudeInit(): void {
 
     if (newServers.length === 0) {
       console.log(chalk.yellow('mcp-gauge is already installed and up to date.'));
-      console.log('Run ' + chalk.cyan('mcp-gauge status') + ' to see your token budget.\n');
+      console.log('Nothing was changed.');
+      console.log('Run ' + chalk.cyan('mcp-gauge status') + ' to see your dashboard URL.\n');
       process.exit(0);
     }
 
@@ -83,13 +88,15 @@ function runClaudeInit(): void {
 
     console.log(chalk.green(`✓ Added ${newServers.length} new server(s) to mcp-gauge:\n`));
     newServers.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
-    console.log(`\nRestart Claude Desktop to pick up the new server(s).\n`);
+    console.log(`\nRestart Claude Desktop to pick up the new server(s).`);
+    console.log('Then run ' + chalk.cyan('mcp-gauge status') + ' to open the dashboard.\n');
     process.exit(0);
   }
 
   if (serverNames.length === 0) {
     console.log(chalk.yellow('No MCP servers found in your Claude Desktop config.'));
-    console.log('Add some servers first, then run mcp-gauge init again.\n');
+    console.log('Nothing was changed.');
+    console.log('Add MCP servers in Claude Desktop first, then run ' + chalk.cyan('mcp-gauge init') + '.\n');
     process.exit(0);
   }
 
@@ -116,12 +123,13 @@ function runClaudeInit(): void {
 
   // ── 4. Backup original config ────────────────────────────────────────────
   backupClaudeConfig();
-  console.log(chalk.dim(`✓ Backed up original config to ~/.mcp-gauge/claude_config_backup.json`));
+  console.log(chalk.dim(`✓ Created backup: ${CLAUDE_BACKUP_PATH}`));
 
   // ── 5. Write launch config (upstream server list, read by proxy at start) ─
   const upstreamConfigs: Record<string, ServerConfig> = {};
   serverNames.forEach(name => { upstreamConfigs[name] = servers[name]; });
   writeLaunchConfig(upstreamConfigs);
+  console.log(chalk.dim(`✓ Saved ${serverNames.length} original server(s) for the proxy`));
 
   // ── 6. Rewrite config — merge so other top-level keys are preserved ───────
   const proxyEntry: ServerConfig = {
@@ -137,15 +145,18 @@ function runClaudeInit(): void {
   };
 
   writeClaudeConfig(newConfig);
+  console.log(chalk.dim('✓ Replaced direct MCP servers with the mcp-gauge proxy'));
 
   // ── 7. Done ───────────────────────────────────────────────────────────────
   console.log(chalk.green('\n✓ mcp-gauge installed successfully!\n'));
+  console.log(`Routed ${chalk.bold(serverNames.length)} MCP server(s) through mcp-gauge.`);
   console.log('What happens next:');
   console.log(`  1. ${chalk.bold('Restart Claude Desktop')} — the proxy starts automatically`);
   console.log(`  2. Run ${chalk.cyan('mcp-gauge status')} to find your dashboard URL`);
   console.log(`  3. Disable unused tools with one click\n`);
+  console.log(chalk.dim(`Backup: ${CLAUDE_BACKUP_PATH}`));
   console.log(chalk.dim(`To add new servers later: add them in Claude Desktop, then re-run ${chalk.white('mcp-gauge init')}`));
-  console.log(chalk.dim(`To uninstall: ${chalk.white('mcp-gauge uninstall')}\n`));
+  console.log(chalk.dim(`To undo this safely: ${chalk.white('mcp-gauge uninstall')}\n`));
 }
 
 function runCodexInit(): void {
@@ -156,6 +167,8 @@ function runCodexInit(): void {
     console.error(chalk.red(`✗ ${err}`));
     process.exit(1);
   }
+
+  console.log(`Found Codex config: ${chalk.dim(displayPath(getCodexConfigPath()))}`);
 
   const servers = readCodexStdioServers(configText);
   const serverNames = Object.keys(servers).filter(n => n !== PROXY_SERVER_NAME);
@@ -172,7 +185,8 @@ function runCodexInit(): void {
       writeLaunchConfig(existingLaunch, 'codex');
       writeCodexConfigText(rewriteCodexMcpServers(configText, [], proxyEntry));
       console.log(chalk.yellow('mcp-gauge is already installed and up to date.'));
-      console.log('Run ' + chalk.cyan('mcp-gauge status --client codex') + ' to see your token budget.\n');
+      console.log('Nothing was changed.');
+      console.log('Run ' + chalk.cyan('mcp-gauge status --client codex') + ' to see your dashboard URL.\n');
       process.exit(0);
     }
 
@@ -184,12 +198,14 @@ function runCodexInit(): void {
 
     console.log(chalk.green(`✓ Added ${newServers.length} new server(s) to mcp-gauge:\n`));
     newServers.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
-    console.log(`\nRestart Codex to pick up the new server(s).\n`);
+    console.log(`\nRestart Codex to pick up the new server(s).`);
+    console.log('Then run ' + chalk.cyan('mcp-gauge status --client codex') + ' to open the dashboard.\n');
     process.exit(0);
   }
 
   if (serverNames.length === 0) {
-    console.log(chalk.yellow('No local MCP servers found in your Codex config.'));
+    console.log(chalk.yellow('No local stdio MCP servers found in your Codex config.'));
+    console.log('HTTP MCP servers will be left untouched.');
     console.log('Installing mcp-gauge for Codex usage tracking only.\n');
   } else {
     console.log(`Found ${chalk.bold(serverNames.length)} local MCP server(s):\n`);
@@ -200,24 +216,32 @@ function runCodexInit(): void {
   const gaugeCommand = findGlobalGaugeCommand('Codex config');
 
   backupCodexConfig();
-  console.log(chalk.dim(`✓ Backed up original config to ~/.mcp-gauge/codex_config_backup.toml`));
+  console.log(chalk.dim(`✓ Created backup: ${displayPath(getCodexBackupPath())}`));
 
   const upstreamConfigs: Record<string, ServerConfig> = {};
   serverNames.forEach(name => { upstreamConfigs[name] = servers[name]; });
   writeLaunchConfig(upstreamConfigs, 'codex');
+  console.log(chalk.dim(`✓ Saved ${serverNames.length} original local server(s) for the proxy`));
 
   writeCodexConfigText(rewriteCodexMcpServers(configText, serverNames, {
     command: gaugeCommand,
     args: ['proxy', '--client', 'codex'],
   }));
+  console.log(chalk.dim('✓ Added the mcp-gauge proxy to Codex config'));
 
   console.log(chalk.green('\n✓ mcp-gauge installed successfully!\n'));
+  if (serverNames.length > 0) {
+    console.log(`Routed ${chalk.bold(serverNames.length)} local MCP server(s) through mcp-gauge.`);
+  } else {
+    console.log('Codex usage tracking is ready. No local MCP servers were changed.');
+  }
   console.log('What happens next:');
   console.log(`  1. ${chalk.bold('Restart Codex')} — the proxy starts automatically`);
   console.log(`  2. Run ${chalk.cyan('mcp-gauge status --client codex')} to find your dashboard URL`);
   console.log(`  3. Review Codex usage and disable unused MCP tools when present\n`);
+  console.log(chalk.dim(`Backup: ${displayPath(getCodexBackupPath())}`));
   console.log(chalk.dim(`To add new local servers later: add them in Codex, then re-run ${chalk.white('mcp-gauge init --client codex')}`));
-  console.log(chalk.dim(`To uninstall: ${chalk.white('mcp-gauge uninstall --client codex')}\n`));
+  console.log(chalk.dim(`To undo this safely: ${chalk.white('mcp-gauge uninstall --client codex')}\n`));
 }
 
 export function runUninstall(client: ClientName = detectClient()): void {
@@ -237,7 +261,8 @@ function runClaudeUninstall(): void {
   );
 
   if (!fs.existsSync(backupPath)) {
-    console.error(chalk.red('✗ No backup found. Cannot restore original config.'));
+    console.error(chalk.red('✗ No backup found. Nothing was changed.'));
+    console.error(`Expected backup at: ${CLAUDE_BACKUP_PATH}`);
     process.exit(1);
   }
 
@@ -265,6 +290,7 @@ function runClaudeUninstall(): void {
   fs.writeFileSync(getClaudeConfigPath(), JSON.stringify(restored, null, 2), 'utf-8');
 
   console.log(chalk.green('✓ Restored original Claude Desktop config.'));
+  console.log(`Used backup: ${CLAUDE_BACKUP_PATH}`);
   console.log('Restart Claude Desktop to reconnect directly to your MCP servers.\n');
 }
 
@@ -272,19 +298,30 @@ function runCodexUninstall(): void {
   const backupText = readCodexBackupText();
 
   if (backupText === null) {
-    console.error(chalk.red('✗ No backup found. Cannot restore original Codex config.'));
+    console.error(chalk.red('✗ No backup found. Nothing was changed.'));
+    console.error(`Expected backup at: ${displayPath(getCodexBackupPath())}`);
     process.exit(1);
   }
 
   const allServers = readLaunchConfig('codex');
+  const currentConfigText = readCurrentCodexConfigOrBackup(backupText);
   const restored = Object.keys(allServers).length > 0
-    ? restoreCodexMcpServers(readCodexConfigText(), allServers)
+    ? restoreCodexMcpServers(currentConfigText, allServers)
     : backupText;
 
-  fs.writeFileSync(getCodexConfigPath(), restored, 'utf-8');
+  writeCodexConfigText(restored);
 
   console.log(chalk.green('✓ Restored original Codex config.'));
+  console.log(`Used backup: ${displayPath(getCodexBackupPath())}`);
   console.log('Restart Codex to reconnect directly to your MCP servers.\n');
+}
+
+function readCurrentCodexConfigOrBackup(backupText: string): string {
+  try {
+    return readCodexConfigText();
+  } catch {
+    return backupText;
+  }
 }
 
 function findGlobalGaugeCommand(configName: string): string {
@@ -308,4 +345,12 @@ function detectClient(): ClientName {
   if (claudeExists) return 'claude';
   if (codexExists) return 'codex';
   return 'claude';
+}
+
+function displayPath(filePath: string): string {
+  const home = process.env.HOME;
+  if (home && filePath.startsWith(`${home}${path.sep}`)) {
+    return `~/${filePath.slice(home.length + 1)}`;
+  }
+  return filePath;
 }
