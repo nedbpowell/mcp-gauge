@@ -14,7 +14,13 @@ import http from 'http';
 import net from 'net';
 import { stateEmitter, getBudgetState, updateToolState } from '../proxy/proxy.js';
 import { setToolDisabled, writePort } from '../store.js';
-import { BudgetState } from '../types.js';
+import { BudgetState, ClientName } from '../types.js';
+import { getCodexUsageSummary } from '../codex/usage.js';
+
+export interface DashboardHandle {
+  port: number;
+  close: () => Promise<void>;
+}
 
 // ─── Port finding ─────────────────────────────────────────────────────────────
 
@@ -93,6 +99,18 @@ function renderDashboard(port: number): string {
     .stat-value { font-size: 22px; font-weight: 700; }
     .stat-value.green { color: #3fb950; }
     .stat-value.yellow { color: #e3b341; }
+
+    .codex-section { margin-bottom: 32px; }
+    .section-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+    .codex-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+    .codex-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; }
+    .codex-label { color: #7d8590; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+    .codex-value { font-size: 18px; font-weight: 700; }
+    .codex-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .compact-list { list-style: none; border-top: 1px solid #21262d; }
+    .compact-list li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #161b22; }
+    .compact-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .compact-meta { color: #7d8590; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
     /* Server blocks */
     .server { margin-bottom: 28px; }
@@ -176,7 +194,16 @@ function renderDashboard(port: number): string {
   <script>
     const ws = new WebSocket('ws://localhost:${port}/ws');
     let state = null;
+    let codexUsage = null;
     let pendingChanges = false;
+
+    fetch('/api/codex-usage?days=7')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        codexUsage = data;
+        if (state) render(state);
+      })
+      .catch(() => {});
 
     ws.onmessage = (e) => {
       state = JSON.parse(e.data);
@@ -225,6 +252,16 @@ function renderDashboard(port: number): string {
 
     function fmt(n) {
       return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n.toString();
+    }
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch]));
     }
 
     function pct(n, limit) {
@@ -306,7 +343,11 @@ function renderDashboard(port: number): string {
         \`;
       }).join('');
 
+      const codexHtml = renderCodexUsage();
+
       document.getElementById('app').innerHTML = \`
+        \${codexHtml}
+
         <div class="budget-section">
           <div class="budget-numbers">
             <span class="active">\${fmt(s.activeTokens)} tokens used by tools</span>
@@ -346,6 +387,59 @@ function renderDashboard(port: number): string {
         document.getElementById('restart-notice').classList.add('visible');
       }
     }
+
+    function renderCodexUsage() {
+      if (!codexUsage) return '';
+      const tools = codexUsage.toolCalls.slice(0, 8).map(tool => \`
+        <li>
+          <span class="compact-name">\${esc(tool.name)}</span>
+          <span class="compact-meta">\${fmt(tool.calls)} calls\${tool.failures ? ' · ' + fmt(tool.failures) + ' failed' : ''}</span>
+        </li>
+      \`).join('');
+      const projects = codexUsage.projects.slice(0, 6).map(project => \`
+        <li title="\${esc(project.cwd)}">
+          <span class="compact-name">\${esc(project.name)}</span>
+          <span class="compact-meta">\${fmt(project.totalTokens)} tokens</span>
+        </li>
+      \`).join('');
+      const context = codexUsage.latestContextUsagePercent === null ? 'n/a' : codexUsage.latestContextUsagePercent + '%';
+      const primaryLimit = codexUsage.latestRateLimits.primaryUsedPercent === null ? 'n/a' : codexUsage.latestRateLimits.primaryUsedPercent + '%';
+      const secondaryLimit = codexUsage.latestRateLimits.secondaryUsedPercent === null ? 'n/a' : codexUsage.latestRateLimits.secondaryUsedPercent + '%';
+
+      return \`
+        <div class="codex-section">
+          <div class="section-title">Codex Usage</div>
+          <div class="codex-grid">
+            <div class="codex-card">
+              <div class="codex-label">Sessions</div>
+              <div class="codex-value">\${fmt(codexUsage.sessionsScanned)}</div>
+            </div>
+            <div class="codex-card">
+              <div class="codex-label">Tokens</div>
+              <div class="codex-value">\${fmt(codexUsage.totalTokenUsage.totalTokens)}</div>
+            </div>
+            <div class="codex-card">
+              <div class="codex-label">Context</div>
+              <div class="codex-value">\${context}</div>
+            </div>
+            <div class="codex-card">
+              <div class="codex-label">Rate limits</div>
+              <div class="codex-value">\${primaryLimit} / \${secondaryLimit}</div>
+            </div>
+          </div>
+          <div class="codex-columns">
+            <div>
+              <div class="codex-label">Top built-in tools</div>
+              <ul class="compact-list">\${tools || '<li><span class="compact-meta">No tool calls found</span></li>'}</ul>
+            </div>
+            <div>
+              <div class="codex-label">Top projects</div>
+              <ul class="compact-list">\${projects || '<li><span class="compact-meta">No projects found</span></li>'}</ul>
+            </div>
+          </div>
+        </div>
+      \`;
+    }
   </script>
 </body>
 </html>`;
@@ -353,17 +447,20 @@ function renderDashboard(port: number): string {
 
 // ─── Server startup ───────────────────────────────────────────────────────────
 
-export async function startDashboard(preferredPort = 3456): Promise<void> {
+export async function startDashboard(
+  preferredPort = 3456,
+  client: ClientName = 'claude'
+): Promise<DashboardHandle> {
   const port = await findAvailablePort(preferredPort);
 
-  if (port !== preferredPort) {
+  if (preferredPort !== 0 && port !== preferredPort) {
     process.stderr.write(
       `[mcp-gauge] Port ${preferredPort} in use, using ${port} instead\n`
     );
   }
 
   // Persist the actual port so `mcp-gauge status` can find it
-  writePort(port);
+  writePort(port, client);
 
   const app = express();
   app.use(express.json());
@@ -381,7 +478,7 @@ export async function startDashboard(preferredPort = 3456): Promise<void> {
       disabled: boolean;
     };
 
-    setToolDisabled(serverName, toolName, disabled);
+    setToolDisabled(serverName, toolName, disabled, client);
     updateToolState(serverName, toolName, disabled);
 
     res.json({ ok: true });
@@ -390,6 +487,15 @@ export async function startDashboard(preferredPort = 3456): Promise<void> {
   // Current state snapshot (for `mcp-gauge status`)
   app.get('/api/state', (_req, res) => {
     res.json(getBudgetState());
+  });
+
+  app.get('/api/codex-usage', async (req, res) => {
+    const days = typeof req.query.days === 'string' ? Number(req.query.days) : undefined;
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : undefined;
+    res.json(await getCodexUsageSummary({
+      days: days !== undefined && Number.isFinite(days) && days > 0 ? days : undefined,
+      cwd,
+    }));
   });
 
   const httpServer = http.createServer(app);
@@ -421,4 +527,16 @@ export async function startDashboard(preferredPort = 3456): Promise<void> {
       resolve();
     });
   });
+
+  return {
+    port,
+    close: () => new Promise<void>((resolve, reject) => {
+      wss.close(() => {
+        httpServer.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }),
+  };
 }

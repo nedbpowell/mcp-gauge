@@ -5,6 +5,7 @@ import { runInit, runUninstall } from './cli/init.js';
 import { startProxy } from './proxy/proxy.js';
 import { startDashboard } from './dashboard/server.js';
 import { readLaunchConfig, readPort } from './store.js';
+import { formatCodexUsageSummary, getCodexUsageSummary } from './codex/usage.js';
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 program
@@ -33,27 +34,38 @@ program
     .command('proxy')
     .description('Start the MCP proxy (launched automatically by your MCP client)')
     .option('--port <number>', 'Dashboard port (default: 3456, falls back to OS-assigned)')
+    .option('--client <client>', 'Client state to use: claude or codex')
     .action(async (opts) => {
-    const upstreamConfigs = readLaunchConfig();
-    if (Object.keys(upstreamConfigs).length === 0) {
+    const client = parseClientOption(opts.client) ?? 'claude';
+    const upstreamConfigs = readLaunchConfig(client);
+    if (Object.keys(upstreamConfigs).length === 0 && client !== 'codex') {
         process.stderr.write('[mcp-gauge] No server configs found in ~/.mcp-gauge/launch.json\n');
         process.exit(1);
     }
     const preferredPort = opts.port ? parseInt(opts.port, 10) : 3456;
     // Start the dashboard HTTP server in the same process
     // (it runs alongside the stdio proxy without conflict)
-    await startDashboard(preferredPort);
+    await startDashboard(preferredPort, client);
     // Start the MCP proxy — this blocks, communicating over stdio
-    await startProxy(upstreamConfigs);
+    await startProxy(upstreamConfigs, client);
 });
 // ── mcp-gauge status ──────────────────────────────────────────────────────────
 program
     .command('status')
     .description('Print current token budget to the terminal')
-    .action(async () => {
-    const port = readPort();
+    .option('--client <client>', 'Client state to use: claude or codex')
+    .action(async (opts) => {
+    const client = parseClientOption(opts.client) ?? 'claude';
+    const port = readPort(client);
     const res = await fetch(`http://localhost:${port}/api/state`).catch(() => null);
     if (!res) {
+        if (client === 'codex') {
+            const usage = await getCodexUsageSummary();
+            console.log();
+            console.log(formatCodexUsageSummary(usage));
+            console.log('\n  MCP proxy is not running, so only Codex log usage is shown.\n');
+            return;
+        }
         console.error('mcp-gauge proxy is not running. Start your MCP client first.');
         process.exit(1);
     }
@@ -68,7 +80,32 @@ program
             console.log(`    ${status} ${tool.name.padEnd(40)} ${tool.tokenCost.toString().padStart(5)} tokens`);
         }
     }
+    if (client === 'codex') {
+        const usage = await getCodexUsageSummary();
+        console.log();
+        console.log(formatCodexUsageSummary(usage));
+    }
     console.log(`\n  Open http://localhost:${port} for the full dashboard\n`);
+});
+// ── mcp-gauge codex-usage ────────────────────────────────────────────────────
+program
+    .command('codex-usage')
+    .description('Summarize Codex model and tool usage from local session logs')
+    .option('--days <number>', 'Days of Codex logs to scan (default: 7)')
+    .option('--cwd <path>', 'Only include sessions from this exact cwd')
+    .option('--json', 'Print machine-readable JSON')
+    .action(async (opts) => {
+    const usage = await getCodexUsageSummary({
+        days: opts.days ? parsePositiveInt(opts.days, '--days') : undefined,
+        cwd: opts.cwd,
+    });
+    if (opts.json) {
+        console.log(JSON.stringify(usage, null, 2));
+        return;
+    }
+    console.log();
+    console.log(formatCodexUsageSummary(usage));
+    console.log();
 });
 program.parse();
 function parseClientOption(client) {
@@ -78,4 +115,12 @@ function parseClientOption(client) {
         return client;
     console.error(`Unknown client: ${client}. Expected "claude" or "codex".`);
     process.exit(1);
+}
+function parsePositiveInt(value, optionName) {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        console.error(`${optionName} must be a positive integer.`);
+        process.exit(1);
+    }
+    return parsed;
 }

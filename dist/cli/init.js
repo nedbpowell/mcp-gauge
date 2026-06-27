@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
-import { backupCodexConfig, readClaudeConfig, readCodexConfigText, readCodexStdioServers, writeClaudeConfig, writeCodexConfigText, backupClaudeConfig, codexServersToToml, getCodexBackupPath, getClaudeConfigPath, getCodexConfigPath, readLaunchConfig, rewriteCodexMcpServers, writeLaunchConfig, } from '../store.js';
+import { backupCodexConfig, readClaudeConfig, readCodexConfigText, readCodexStdioServers, writeClaudeConfig, writeCodexConfigText, backupClaudeConfig, getCodexBackupPath, getClaudeConfigPath, getCodexConfigPath, readCodexBackupText, readLaunchConfig, restoreCodexMcpServers, rewriteCodexMcpServers, writeLaunchConfig, } from '../store.js';
 const PROXY_SERVER_NAME = '__mcp_gauge_proxy__';
 export function runInit(client = detectClient()) {
     console.log(chalk.bold('\n⚡ mcp-gauge init\n'));
@@ -126,17 +126,23 @@ function runCodexInit() {
     const servers = readCodexStdioServers(configText);
     const serverNames = Object.keys(servers).filter(n => n !== PROXY_SERVER_NAME);
     if (servers[PROXY_SERVER_NAME]) {
-        const existingLaunch = readLaunchConfig();
+        const existingLaunch = readLaunchConfig('codex');
         const newServers = serverNames.filter(n => !existingLaunch[n]);
+        const proxyEntry = {
+            ...servers[PROXY_SERVER_NAME],
+            args: ['proxy', '--client', 'codex'],
+        };
         if (newServers.length === 0) {
+            writeLaunchConfig(existingLaunch, 'codex');
+            writeCodexConfigText(rewriteCodexMcpServers(configText, [], proxyEntry));
             console.log(chalk.yellow('mcp-gauge is already installed and up to date.'));
-            console.log('Run ' + chalk.cyan('mcp-gauge status') + ' to see your token budget.\n');
+            console.log('Run ' + chalk.cyan('mcp-gauge status --client codex') + ' to see your token budget.\n');
             process.exit(0);
         }
         const updatedLaunch = { ...existingLaunch };
         newServers.forEach(name => { updatedLaunch[name] = servers[name]; });
-        writeLaunchConfig(updatedLaunch);
-        writeCodexConfigText(rewriteCodexMcpServers(configText, newServers, servers[PROXY_SERVER_NAME]));
+        writeLaunchConfig(updatedLaunch, 'codex');
+        writeCodexConfigText(rewriteCodexMcpServers(configText, newServers, proxyEntry));
         console.log(chalk.green(`✓ Added ${newServers.length} new server(s) to mcp-gauge:\n`));
         newServers.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
         console.log(`\nRestart Codex to pick up the new server(s).\n`);
@@ -144,27 +150,28 @@ function runCodexInit() {
     }
     if (serverNames.length === 0) {
         console.log(chalk.yellow('No local MCP servers found in your Codex config.'));
-        console.log('Add a stdio MCP server first, then run mcp-gauge init --client codex again.\n');
-        process.exit(0);
+        console.log('Installing mcp-gauge for Codex usage tracking only.\n');
     }
-    console.log(`Found ${chalk.bold(serverNames.length)} local MCP server(s):\n`);
-    serverNames.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
-    console.log();
+    else {
+        console.log(`Found ${chalk.bold(serverNames.length)} local MCP server(s):\n`);
+        serverNames.forEach(name => console.log(`  ${chalk.dim('•')} ${name}`));
+        console.log();
+    }
     const gaugeCommand = findGlobalGaugeCommand('Codex config');
     backupCodexConfig();
     console.log(chalk.dim(`✓ Backed up original config to ~/.mcp-gauge/codex_config_backup.toml`));
     const upstreamConfigs = {};
     serverNames.forEach(name => { upstreamConfigs[name] = servers[name]; });
-    writeLaunchConfig(upstreamConfigs);
+    writeLaunchConfig(upstreamConfigs, 'codex');
     writeCodexConfigText(rewriteCodexMcpServers(configText, serverNames, {
         command: gaugeCommand,
-        args: ['proxy'],
+        args: ['proxy', '--client', 'codex'],
     }));
     console.log(chalk.green('\n✓ mcp-gauge installed successfully!\n'));
     console.log('What happens next:');
     console.log(`  1. ${chalk.bold('Restart Codex')} — the proxy starts automatically`);
-    console.log(`  2. Run ${chalk.cyan('mcp-gauge status')} to find your dashboard URL`);
-    console.log(`  3. Disable unused tools with one click\n`);
+    console.log(`  2. Run ${chalk.cyan('mcp-gauge status --client codex')} to find your dashboard URL`);
+    console.log(`  3. Review Codex usage and disable unused MCP tools when present\n`);
     console.log(chalk.dim(`To add new local servers later: add them in Codex, then re-run ${chalk.white('mcp-gauge init --client codex')}`));
     console.log(chalk.dim(`To uninstall: ${chalk.white('mcp-gauge uninstall --client codex')}\n`));
 }
@@ -207,16 +214,13 @@ function runClaudeUninstall() {
 }
 function runCodexUninstall() {
     const backupPath = getCodexBackupPath();
-    if (!fs.existsSync(backupPath)) {
+    if (!fs.existsSync(backupPath) && readCodexBackupText() === null) {
         console.error(chalk.red('✗ No backup found. Cannot restore original Codex config.'));
         process.exit(1);
     }
-    const backup = fs.readFileSync(backupPath, 'utf-8');
-    const allServers = readLaunchConfig();
-    const serverNames = Object.keys(allServers);
-    const restored = serverNames.length > 0
-        ? `${rewriteCodexMcpServers(backup, serverNames, null).replace(/\s+$/g, '')}\n\n${codexServersToToml(allServers)}\n`
-        : backup;
+    const configText = readCodexConfigText();
+    const allServers = readLaunchConfig('codex');
+    const restored = restoreCodexMcpServers(configText, allServers);
     fs.writeFileSync(getCodexConfigPath(), restored, 'utf-8');
     console.log(chalk.green('✓ Restored original Codex config.'));
     console.log('Restart Codex to reconnect directly to your MCP servers.\n');

@@ -2,6 +2,8 @@ export interface ServerConfig {
     command: string;
     args: string[];
     env?: Record<string, string>;
+    originalBlock?: string;
+    [key: string]: unknown;
 }
 export interface ClaudeConfig {
     mcpServers: Record<string, ServerConfig>;
