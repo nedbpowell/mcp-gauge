@@ -8,6 +8,8 @@ mcp-gauge sits between Claude Desktop or Codex and your MCP servers, measures ev
 
 ## Install
 
+### Claude Desktop
+
 ```bash
 npm install -g mcp-gauge
 mcp-gauge init
@@ -15,13 +17,27 @@ mcp-gauge init
 
 Restart Claude Desktop, then run `mcp-gauge status` to get your dashboard URL.
 
-For Codex, install with:
+### Codex
+
+If global npm installs work on your machine:
 
 ```bash
+npm install -g mcp-gauge
 mcp-gauge init --client codex
 ```
 
-Restart Codex, then run `mcp-gauge status` to get your dashboard URL.
+If `npm install -g` fails with permissions errors, or `mcp-gauge` is not found after install, use a user-local npm prefix:
+
+```bash
+mkdir -p ~/.npm-global ~/.npm-cache
+npm config set prefix ~/.npm-global
+npm install -g --cache ~/.npm-cache mcp-gauge
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+mcp-gauge init --client codex
+```
+
+Restart Codex, then run `mcp-gauge status --client codex` to get your dashboard URL.
 
 > **Why global install?** mcp-gauge rewrites your client config to point at the proxy binary. If the binary path changes (e.g. npx cache cleared), your MCP access can break silently. A global install keeps the path stable.
 
@@ -40,12 +56,30 @@ Restart Codex, then run `mcp-gauge status` to get your dashboard URL.
     ⚠ list_channels                          1,200 tokens  (never called)
 ```
 
+For Codex, mcp-gauge also summarizes your local Codex session logs:
+
+```text
+Codex Usage (7d)
+  Sessions: 22 (22 with token data)
+  Tokens: 117,592,599 total, 117,070,096 input, 522,503 output
+  Latest context: 35% used
+  Rate limits: primary 73%, secondary 27%
+  Top projects:
+    mcp-gauge                            11,264,531 tokens · 1 sessions
+  Failure hotspots:
+    mcp-gauge                    exec_command       12 failed
+  Suggestions:
+    - mcp-gauge has repeated exec_command failures; give an exact repo path, ask Codex to inspect first, or narrow the task.
+```
+
 ## Commands
 
 ```bash
 mcp-gauge init                  # Install into Claude Desktop by default
 mcp-gauge init --client codex   # Install into Codex
 mcp-gauge status                # Print token budget + dashboard URL in terminal
+mcp-gauge status --client codex # Print MCP budget plus compact Codex usage
+mcp-gauge codex-usage --days 7  # Detailed Codex usage report from local logs
 mcp-gauge uninstall             # Restore your original Claude Desktop config
 mcp-gauge uninstall --client codex
 ```
@@ -61,6 +95,17 @@ mcp-gauge installs itself as a single MCP proxy server in your Claude Desktop or
 5. Serves a local dashboard with live updates
 
 Your real servers run exactly as before. mcp-gauge adds zero latency to tool calls (it's local stdio, not a network hop).
+
+## Codex usage tracking
+
+Codex support has two parts:
+
+- **MCP proxy tracking:** local stdio MCP servers are proxied, measured, and can be disabled from the dashboard.
+- **Codex log insights:** local Codex session logs are read retrospectively to show token usage, context pressure, rate-limit pressure, top projects, expensive sessions, failed tool-call hotspots, and suggestions.
+
+Codex usage tracking works even with zero MCP servers installed. In that case, `mcp-gauge status --client codex` still reports Codex usage from local logs, and the dashboard shows the Codex Usage section.
+
+This log-based view is read-only and retrospective. It cannot disable built-in Codex tools, app tools, or plugin tools; only proxied MCP tools can be toggled by mcp-gauge.
 
 ## Adding new MCP servers
 

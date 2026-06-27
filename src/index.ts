@@ -7,7 +7,11 @@ import { startProxy } from './proxy/proxy.js';
 import { startDashboard } from './dashboard/server.js';
 import { readLaunchConfig, readPort } from './store.js';
 import { ClientName } from './types.js';
-import { formatCodexUsageSummary, getCodexUsageSummary } from './codex/usage.js';
+import {
+  formatCodexUsageStatus,
+  formatCodexUsageSummary,
+  getCodexUsageSummary,
+} from './codex/usage.js';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json') as { version: string };
@@ -74,7 +78,7 @@ program
       if (client === 'codex') {
         const usage = await getCodexUsageSummary();
         console.log();
-        console.log(formatCodexUsageSummary(usage));
+        console.log(formatCodexUsageStatus(usage));
         console.log('\n  MCP proxy is not running, so only Codex log usage is shown.\n');
         return;
       }
@@ -105,7 +109,7 @@ program
     if (client === 'codex') {
       const usage = await getCodexUsageSummary();
       console.log();
-      console.log(formatCodexUsageSummary(usage));
+      console.log(formatCodexUsageStatus(usage));
     }
     console.log(`\n  Open http://localhost:${port} for the full dashboard\n`);
   });

@@ -29,9 +29,33 @@ export interface CodexToolUsageSummary {
 export interface CodexProjectUsageSummary {
   cwd: string;
   name: string;
+  displayName: string;
   sessions: number;
   totalTokens: number;
   toolCalls: number;
+  toolFailures: number;
+}
+
+export interface CodexDailyUsageSummary {
+  date: string;
+  sessions: number;
+  totalTokens: number;
+  toolCalls: number;
+  toolFailures: number;
+}
+
+export interface CodexFailureHotspot {
+  cwd: string | null;
+  projectName: string;
+  projectDisplayName: string;
+  toolName: string;
+  calls: number;
+  failures: number;
+}
+
+export interface CodexRecommendation {
+  severity: 'info' | 'warning';
+  message: string;
 }
 
 export interface CodexSessionUsageSummary {
@@ -39,15 +63,19 @@ export interface CodexSessionUsageSummary {
   startedAt: string | null;
   lastEventAt: string | null;
   cwd: string | null;
+  projectName: string;
+  projectDisplayName: string;
   originator: string | null;
   cliVersion: string | null;
   source: string | null;
   modelProvider: string | null;
   totalTokenUsage: TokenUsage | null;
   lastTokenUsage: TokenUsage | null;
+  totalTokens: number;
   modelContextWindow: number | null;
   primaryRateLimitUsedPercent: number | null;
   secondaryRateLimitUsedPercent: number | null;
+  durationMs: number | null;
   toolCalls: number;
   toolFailures: number;
 }
@@ -69,6 +97,10 @@ export interface CodexUsageSummary {
   };
   toolCalls: CodexToolUsageSummary[];
   projects: CodexProjectUsageSummary[];
+  dailyUsage: CodexDailyUsageSummary[];
+  topSessions: CodexSessionUsageSummary[];
+  failureHotspots: CodexFailureHotspot[];
+  recommendations: CodexRecommendation[];
   recentSessions: CodexSessionUsageSummary[];
 }
 
@@ -126,13 +158,27 @@ export async function getCodexUsageSummary(
   const totalTokenUsage = emptyTokenUsage();
   const toolCalls = new Map<string, CodexToolUsageSummary>();
   const projects = new Map<string, CodexProjectUsageSummary>();
+  const dailyUsage = new Map<string, CodexDailyUsageSummary>();
+  const failureHotspots = new Map<string, CodexFailureHotspot>();
   let sessionsWithTokens = 0;
+  const basenameCounts = countBy(
+    sessionSummaries
+      .map((session) => session.cwd)
+      .filter((cwd): cwd is string => cwd !== null)
+      .map((cwd) => projectName(cwd))
+  );
 
   for (const session of sessionSummaries) {
     if (session.totalTokenUsage) {
       sessionsWithTokens += 1;
       addTokenUsage(totalTokenUsage, session.totalTokenUsage);
     }
+
+    session.projectName = session.cwd ? projectName(session.cwd) : '(unknown)';
+    session.projectDisplayName = session.cwd
+      ? projectDisplayName(session.cwd, basenameCounts)
+      : '(unknown)';
+    session.totalTokens = session.totalTokenUsage?.totalTokens ?? 0;
 
     const acc = sessions.get(session.id);
     if (acc) {
@@ -147,21 +193,56 @@ export async function getCodexUsageSummary(
         current.failures += acc.toolFailures.get(toolName) ?? 0;
         current.outputTokenEstimate += acc.toolOutputTokenEstimate.get(toolName) ?? 0;
         toolCalls.set(toolName, current);
+
+        const failures = acc.toolFailures.get(toolName) ?? 0;
+        if (failures > 0) {
+          const key = `${session.cwd ?? ''}::${toolName}`;
+          const currentHotspot = failureHotspots.get(key) ?? {
+            cwd: session.cwd,
+            projectName: session.projectName,
+            projectDisplayName: session.projectDisplayName,
+            toolName,
+            calls: 0,
+            failures: 0,
+          };
+          currentHotspot.calls += calls;
+          currentHotspot.failures += failures;
+          failureHotspots.set(key, currentHotspot);
+        }
       }
     }
 
     if (session.cwd) {
       const project = projects.get(session.cwd) ?? {
         cwd: session.cwd,
-        name: path.basename(session.cwd) || session.cwd,
+        name: projectName(session.cwd),
+        displayName: projectDisplayName(session.cwd, basenameCounts),
         sessions: 0,
         totalTokens: 0,
         toolCalls: 0,
+        toolFailures: 0,
       };
       project.sessions += 1;
       project.totalTokens += session.totalTokenUsage?.totalTokens ?? 0;
       project.toolCalls += session.toolCalls;
+      project.toolFailures += session.toolFailures;
       projects.set(session.cwd, project);
+    }
+
+    const date = dateKey(session.lastEventAt ?? session.startedAt);
+    if (date) {
+      const day = dailyUsage.get(date) ?? {
+        date,
+        sessions: 0,
+        totalTokens: 0,
+        toolCalls: 0,
+        toolFailures: 0,
+      };
+      day.sessions += 1;
+      day.totalTokens += session.totalTokenUsage?.totalTokens ?? 0;
+      day.toolCalls += session.toolCalls;
+      day.toolFailures += session.toolFailures;
+      dailyUsage.set(date, day);
     }
   }
 
@@ -169,7 +250,17 @@ export async function getCodexUsageSummary(
     (session) => session.lastTokenUsage && session.modelContextWindow && session.modelContextWindow > 0
   );
 
-  return {
+  const projectSummaries = Array.from(projects.values())
+    .sort((a, b) => b.totalTokens - a.totalTokens || b.toolCalls - a.toolCalls || a.cwd.localeCompare(b.cwd));
+  const dailySummaries = Array.from(dailyUsage.values())
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const topSessions = [...sessionSummaries]
+    .sort((a, b) => b.totalTokens - a.totalTokens || b.toolFailures - a.toolFailures || b.toolCalls - a.toolCalls)
+    .slice(0, options.maxRecentSessions ?? 10);
+  const hotspotSummaries = Array.from(failureHotspots.values())
+    .sort((a, b) => b.failures - a.failures || b.calls - a.calls || a.projectDisplayName.localeCompare(b.projectDisplayName));
+
+  const summary: CodexUsageSummary = {
     generatedAt: now.toISOString(),
     since: since.toISOString(),
     days,
@@ -188,10 +279,15 @@ export async function getCodexUsageSummary(
     },
     toolCalls: Array.from(toolCalls.values())
       .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name)),
-    projects: Array.from(projects.values())
-      .sort((a, b) => b.totalTokens - a.totalTokens || b.toolCalls - a.toolCalls || a.cwd.localeCompare(b.cwd)),
+    projects: projectSummaries,
+    dailyUsage: dailySummaries,
+    topSessions,
+    failureHotspots: hotspotSummaries,
+    recommendations: [],
     recentSessions: sessionSummaries.slice(0, options.maxRecentSessions ?? 10),
   };
+  summary.recommendations = buildRecommendations(summary, basenameCounts);
+  return summary;
 }
 
 export async function discoverCodexLogFiles(codexHome: string): Promise<string[]> {
@@ -208,7 +304,7 @@ export async function discoverCodexLogFiles(codexHome: string): Promise<string[]
   return files.sort();
 }
 
-export function formatCodexUsageSummary(summary: CodexUsageSummary): string {
+export function formatCodexUsageStatus(summary: CodexUsageSummary): string {
   const lines: string[] = [];
   lines.push(`Codex Usage (${summary.days}d)`);
   lines.push(`  Sessions: ${summary.sessionsScanned.toLocaleString()} (${summary.sessionsWithTokens.toLocaleString()} with token data)`);
@@ -219,20 +315,64 @@ export function formatCodexUsageSummary(summary: CodexUsageSummary): string {
   if (summary.latestRateLimits.primaryUsedPercent !== null || summary.latestRateLimits.secondaryUsedPercent !== null) {
     lines.push(`  Rate limits: primary ${formatPercent(summary.latestRateLimits.primaryUsedPercent)}, secondary ${formatPercent(summary.latestRateLimits.secondaryUsedPercent)}`);
   }
-  if (summary.toolCalls.length > 0) {
-    lines.push('  Top tools:');
-    for (const tool of summary.toolCalls.slice(0, 8)) {
-      const failures = tool.failures > 0 ? `, ${tool.failures} failed` : '';
-      lines.push(`    ${tool.name.padEnd(28)} ${tool.calls.toString().padStart(4)} calls${failures}`);
-    }
-  }
   if (summary.projects.length > 0) {
     lines.push('  Top projects:');
     for (const project of summary.projects.slice(0, 5)) {
-      lines.push(`    ${project.name.padEnd(28)} ${project.totalTokens.toLocaleString()} tokens · ${project.sessions} sessions`);
+      lines.push(`    ${project.displayName.padEnd(36)} ${project.totalTokens.toLocaleString()} tokens · ${project.sessions} sessions`);
+    }
+  }
+  if (summary.failureHotspots.length > 0) {
+    lines.push('  Failure hotspots:');
+    for (const hotspot of summary.failureHotspots.slice(0, 3)) {
+      lines.push(`    ${hotspot.projectDisplayName.padEnd(28)} ${hotspot.toolName.padEnd(18)} ${hotspot.failures} failed`);
+    }
+  }
+  if (summary.recommendations.length > 0) {
+    lines.push('  Suggestions:');
+    for (const rec of summary.recommendations.slice(0, 3)) {
+      lines.push(`    - ${rec.message}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+export function formatCodexUsageSummary(summary: CodexUsageSummary): string {
+  const lines: string[] = [];
+  lines.push(formatCodexUsageStatus(summary));
+  if (summary.dailyUsage.length > 0) {
+    lines.push('');
+    lines.push('Daily usage:');
+    const maxTokens = Math.max(...summary.dailyUsage.map((day) => day.totalTokens), 1);
+    for (const day of summary.dailyUsage) {
+      const bar = '█'.repeat(Math.max(1, Math.round((day.totalTokens / maxTokens) * 16)));
+      lines.push(`  ${day.date}  ${day.totalTokens.toLocaleString().padStart(12)} tokens  ${bar}`);
+    }
+  }
+  if (summary.topSessions.length > 0) {
+    lines.push('');
+    lines.push('Biggest sessions:');
+    for (const session of summary.topSessions.slice(0, 5)) {
+      const duration = session.durationMs === null ? 'n/a' : formatDuration(session.durationMs);
+      lines.push(`  ${session.projectDisplayName.padEnd(36)} ${session.totalTokens.toLocaleString().padStart(12)} tokens · ${session.toolCalls} calls · ${session.toolFailures} failed · ${duration}`);
+    }
+  }
+  if (summary.toolCalls.length > 0) {
+    lines.push('');
+    lines.push('Top tools:');
+    for (const tool of summary.toolCalls.slice(0, 8)) {
+      const failures = tool.failures > 0 ? `, ${tool.failures} failed` : '';
+      lines.push(`  ${tool.name.padEnd(28)} ${tool.calls.toString().padStart(4)} calls${failures}`);
+    }
+  }
+  if (summary.failureHotspots.length > 0) {
+    lines.push('');
+    lines.push('Failure hotspots:');
+    for (const hotspot of summary.failureHotspots.slice(0, 8)) {
+      lines.push(`  ${hotspot.projectDisplayName.padEnd(36)} ${hotspot.toolName.padEnd(20)} ${hotspot.failures} failed / ${hotspot.calls} calls`);
     }
   }
   if (summary.skippedLines > 0) {
+    lines.push('');
     lines.push(`  Skipped malformed lines: ${summary.skippedLines.toLocaleString()}`);
   }
   return lines.join('\n');
@@ -377,20 +517,26 @@ function getSession(sessions: Map<string, SessionAccumulator>, id: string): Sess
 }
 
 function sessionToSummary(session: SessionAccumulator): CodexSessionUsageSummary {
+  const startedMs = timestampMs(session.startedAt);
+  const endedMs = timestampMs(session.lastEventAt);
   return {
     id: session.id,
     startedAt: session.startedAt,
     lastEventAt: session.lastEventAt,
     cwd: session.cwd,
+    projectName: session.cwd ? projectName(session.cwd) : '(unknown)',
+    projectDisplayName: session.cwd ? projectName(session.cwd) : '(unknown)',
     originator: session.originator,
     cliVersion: session.cliVersion,
     source: session.source,
     modelProvider: session.modelProvider,
     totalTokenUsage: session.totalTokenUsage,
     lastTokenUsage: session.lastTokenUsage,
+    totalTokens: session.totalTokenUsage?.totalTokens ?? 0,
     modelContextWindow: session.modelContextWindow,
     primaryRateLimitUsedPercent: session.primaryRateLimitUsedPercent,
     secondaryRateLimitUsedPercent: session.secondaryRateLimitUsedPercent,
+    durationMs: startedMs > 0 && endedMs >= startedMs ? endedMs - startedMs : null,
     toolCalls: Array.from(session.toolCalls.values()).reduce((sum, count) => sum + count, 0),
     toolFailures: Array.from(session.toolFailures.values()).reduce((sum, count) => sum + count, 0),
   };
@@ -482,4 +628,96 @@ function formatPercent(value: number | null): string {
 
 function homeDir(): string {
   return process.env.HOME ?? os.homedir();
+}
+
+function countBy(values: string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function projectName(cwd: string): string {
+  return path.basename(cwd) || cwd;
+}
+
+function projectDisplayName(cwd: string, basenameCounts: Map<string, number>): string {
+  const name = projectName(cwd);
+  if ((basenameCounts.get(name) ?? 0) <= 1) return name;
+  return `${name} (${shortenHome(cwd)})`;
+}
+
+function shortenHome(filePath: string): string {
+  const home = homeDir();
+  if (filePath === home) return '~';
+  if (filePath.startsWith(`${home}${path.sep}`)) {
+    return `~${filePath.slice(home.length)}`;
+  }
+  return filePath;
+}
+
+function dateKey(timestamp: string | null): string | null {
+  if (!timestamp) return null;
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+function buildRecommendations(
+  summary: CodexUsageSummary,
+  basenameCounts: Map<string, number>
+): CodexRecommendation[] {
+  const recommendations: CodexRecommendation[] = [];
+  if ((summary.latestRateLimits.primaryUsedPercent ?? 0) >= 90) {
+    recommendations.push({
+      severity: 'warning',
+      message: 'Primary rate-limit pressure is high; pause large jobs or use smaller scoped asks.',
+    });
+  }
+  if ((summary.latestContextUsagePercent ?? 0) >= 75) {
+    recommendations.push({
+      severity: 'warning',
+      message: 'Recent context usage is high; start a new thread or ask for a checkpoint summary.',
+    });
+  }
+
+  const hotspot = summary.failureHotspots.find((item) => item.failures >= 5)
+    ?? summary.failureHotspots.find((item) => item.failures >= 3 && item.failures / Math.max(item.calls, 1) >= 0.25);
+  if (hotspot) {
+    recommendations.push({
+      severity: 'warning',
+      message: `${hotspot.projectDisplayName} has repeated ${hotspot.toolName} failures; give an exact repo path, ask Codex to inspect first, or narrow the task.`,
+    });
+  }
+
+  const topCount = Math.max(1, Math.ceil(summary.topSessions.length * 0.1));
+  const deepWork = summary.topSessions
+    .slice(0, topCount)
+    .find((session) => session.totalTokens > 0 && session.toolFailures <= 1);
+  if (deepWork) {
+    recommendations.push({
+      severity: 'info',
+      message: `${deepWork.projectDisplayName} used many tokens with few failures; that looks like deep work, not obvious waste.`,
+    });
+  }
+
+  if (Array.from(basenameCounts.values()).some((count) => count > 1)) {
+    recommendations.push({
+      severity: 'info',
+      message: 'Some projects share the same folder name; use the shortened paths shown here to distinguish workspaces.',
+    });
+  }
+
+  return recommendations;
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }

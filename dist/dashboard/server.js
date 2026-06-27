@@ -96,10 +96,18 @@ function renderDashboard(port) {
     .codex-label { color: #7d8590; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
     .codex-value { font-size: 18px; font-weight: 700; }
     .codex-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .codex-wide { margin-top: 16px; }
+    .codex-bars { display: flex; flex-direction: column; gap: 7px; }
+    .codex-bar-row { display: grid; grid-template-columns: 88px 1fr 92px; gap: 10px; align-items: center; }
+    .codex-bar-track { height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; }
+    .codex-bar-fill { height: 100%; background: #388bfd; border-radius: 4px; }
+    .recommendations { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+    .recommendations li { margin-left: 18px; padding: 3px 0; }
     .compact-list { list-style: none; border-top: 1px solid #21262d; }
     .compact-list li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #161b22; }
     .compact-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .compact-meta { color: #7d8590; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .codex-diagnostics { color: #7d8590; font-size: 12px; margin-top: 12px; }
 
     /* Server blocks */
     .server { margin-bottom: 28px; }
@@ -379,7 +387,10 @@ function renderDashboard(port) {
 
     function renderCodexUsage() {
       if (!codexUsage) return '';
-      const tools = codexUsage.toolCalls.slice(0, 8).map(tool => \`
+      const recommendations = codexUsage.recommendations.slice(0, 3).map(rec => \`
+        <li>\${esc(rec.message)}</li>
+      \`).join('');
+      const tools = codexUsage.toolCalls.slice(0, 6).map(tool => \`
         <li>
           <span class="compact-name">\${esc(tool.name)}</span>
           <span class="compact-meta">\${fmt(tool.calls)} calls\${tool.failures ? ' · ' + fmt(tool.failures) + ' failed' : ''}</span>
@@ -387,17 +398,41 @@ function renderDashboard(port) {
       \`).join('');
       const projects = codexUsage.projects.slice(0, 6).map(project => \`
         <li title="\${esc(project.cwd)}">
-          <span class="compact-name">\${esc(project.name)}</span>
+          <span class="compact-name">\${esc(project.displayName)}</span>
           <span class="compact-meta">\${fmt(project.totalTokens)} tokens</span>
         </li>
+      \`).join('');
+      const sessions = codexUsage.topSessions.slice(0, 5).map(session => \`
+        <li title="\${esc(session.cwd || '')}">
+          <span class="compact-name">\${esc(session.projectDisplayName)}</span>
+          <span class="compact-meta">\${fmt(session.totalTokens)} tokens · \${fmt(session.toolCalls)} calls\${session.toolFailures ? ' · ' + fmt(session.toolFailures) + ' failed' : ''}</span>
+        </li>
+      \`).join('');
+      const hotspots = codexUsage.failureHotspots.slice(0, 5).map(hotspot => \`
+        <li title="\${esc(hotspot.cwd || '')}">
+          <span class="compact-name">\${esc(hotspot.projectDisplayName)} · \${esc(hotspot.toolName)}</span>
+          <span class="compact-meta">\${fmt(hotspot.failures)} failed / \${fmt(hotspot.calls)} calls</span>
+        </li>
+      \`).join('');
+      const maxDaily = Math.max(1, ...codexUsage.dailyUsage.map(day => day.totalTokens));
+      const daily = codexUsage.dailyUsage.map(day => \`
+        <div class="codex-bar-row">
+          <span class="compact-meta">\${esc(day.date)}</span>
+          <div class="codex-bar-track"><div class="codex-bar-fill" style="width:\${Math.max(3, Math.round((day.totalTokens / maxDaily) * 100))}%"></div></div>
+          <span class="compact-meta">\${fmt(day.totalTokens)}</span>
+        </div>
       \`).join('');
       const context = codexUsage.latestContextUsagePercent === null ? 'n/a' : codexUsage.latestContextUsagePercent + '%';
       const primaryLimit = codexUsage.latestRateLimits.primaryUsedPercent === null ? 'n/a' : codexUsage.latestRateLimits.primaryUsedPercent + '%';
       const secondaryLimit = codexUsage.latestRateLimits.secondaryUsedPercent === null ? 'n/a' : codexUsage.latestRateLimits.secondaryUsedPercent + '%';
+      const diagnostics = codexUsage.skippedLines > 0
+        ? '<div class="codex-diagnostics">Skipped malformed lines: ' + fmt(codexUsage.skippedLines) + '</div>'
+        : '';
 
       return \`
         <div class="codex-section">
           <div class="section-title">Codex Usage</div>
+          \${recommendations ? '<div class="recommendations"><div class="codex-label">Suggestions</div><ul>' + recommendations + '</ul></div>' : ''}
           <div class="codex-grid">
             <div class="codex-card">
               <div class="codex-label">Sessions</div>
@@ -426,6 +461,21 @@ function renderDashboard(port) {
               <ul class="compact-list">\${projects || '<li><span class="compact-meta">No projects found</span></li>'}</ul>
             </div>
           </div>
+          <div class="codex-columns codex-wide">
+            <div>
+              <div class="codex-label">Biggest sessions</div>
+              <ul class="compact-list">\${sessions || '<li><span class="compact-meta">No sessions found</span></li>'}</ul>
+            </div>
+            <div>
+              <div class="codex-label">Failure hotspots</div>
+              <ul class="compact-list">\${hotspots || '<li><span class="compact-meta">No failures found</span></li>'}</ul>
+            </div>
+          </div>
+          <div class="codex-wide">
+            <div class="codex-label">Daily usage</div>
+            <div class="codex-bars">\${daily || '<span class="compact-meta">No daily usage found</span>'}</div>
+          </div>
+          \${diagnostics}
         </div>
       \`;
     }
