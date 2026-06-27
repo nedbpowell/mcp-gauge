@@ -6,14 +6,13 @@
   "author": "Ned Powell <nedbaynepowell@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nedbpowell/mcp-gauge"
+    "url": "git+https://github.com/nedbpowell/mcp-gauge.git"
   },
   "main": "dist/index.js",
   "bin": {
-    "mcp-gauge": "./bin/mcp-gauge.js"
+    "mcp-gauge": "dist/index.js"
   },
   "files": [
-    "bin",
     "dist",
     "README.md"
   ],
@@ -23,6 +22,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "node --loader ts-node/esm src/index.ts",
+    "prepack": "npm run build",
     "test": "TS_NODE_TRANSPILE_ONLY=true node --loader ts-node/esm --test \"test/**/*.test.ts\""
   },
   "keywords": [
