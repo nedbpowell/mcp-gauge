@@ -14,7 +14,13 @@ import http from 'http';
 import net from 'net';
 import { stateEmitter, getBudgetState, updateToolState } from '../proxy/proxy.js';
 import { setToolDisabled, writePort } from '../store.js';
-import { BudgetState } from '../types.js';
+import { BudgetState, ClientName } from '../types.js';
+import { getCodexUsageSummary } from '../codex/usage.js';
+
+export interface DashboardHandle {
+  port: number;
+  close: () => Promise<void>;
+}
 
 // ─── Port finding ─────────────────────────────────────────────────────────────
 
@@ -93,6 +99,26 @@ function renderDashboard(port: number): string {
     .stat-value { font-size: 22px; font-weight: 700; }
     .stat-value.green { color: #3fb950; }
     .stat-value.yellow { color: #e3b341; }
+
+    .codex-section { margin-bottom: 32px; }
+    .section-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+    .codex-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+    .codex-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; }
+    .codex-label { color: #7d8590; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+    .codex-value { font-size: 18px; font-weight: 700; }
+    .codex-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .codex-wide { margin-top: 16px; }
+    .codex-bars { display: flex; flex-direction: column; gap: 7px; }
+    .codex-bar-row { display: grid; grid-template-columns: 88px 1fr 92px; gap: 10px; align-items: center; }
+    .codex-bar-track { height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; }
+    .codex-bar-fill { height: 100%; background: #388bfd; border-radius: 4px; }
+    .recommendations { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+    .recommendations li { margin-left: 18px; padding: 3px 0; }
+    .compact-list { list-style: none; border-top: 1px solid #21262d; }
+    .compact-list li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #161b22; }
+    .compact-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .compact-meta { color: #7d8590; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .codex-diagnostics { color: #7d8590; font-size: 12px; margin-top: 12px; }
 
     /* Server blocks */
     .server { margin-bottom: 28px; }
@@ -176,7 +202,16 @@ function renderDashboard(port: number): string {
   <script>
     const ws = new WebSocket('ws://localhost:${port}/ws');
     let state = null;
+    let codexUsage = null;
     let pendingChanges = false;
+
+    fetch('/api/codex-usage?days=7')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        codexUsage = data;
+        if (state) render(state);
+      })
+      .catch(() => {});
 
     ws.onmessage = (e) => {
       state = JSON.parse(e.data);
@@ -225,6 +260,16 @@ function renderDashboard(port: number): string {
 
     function fmt(n) {
       return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n.toString();
+    }
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch]));
     }
 
     function pct(n, limit) {
@@ -306,7 +351,11 @@ function renderDashboard(port: number): string {
         \`;
       }).join('');
 
+      const codexHtml = renderCodexUsage();
+
       document.getElementById('app').innerHTML = \`
+        \${codexHtml}
+
         <div class="budget-section">
           <div class="budget-numbers">
             <span class="active">\${fmt(s.activeTokens)} tokens used by tools</span>
@@ -346,6 +395,101 @@ function renderDashboard(port: number): string {
         document.getElementById('restart-notice').classList.add('visible');
       }
     }
+
+    function renderCodexUsage() {
+      if (!codexUsage) return '';
+      const recommendations = codexUsage.recommendations.slice(0, 3).map(rec => \`
+        <li>\${esc(rec.message)}</li>
+      \`).join('');
+      const tools = codexUsage.toolCalls.slice(0, 6).map(tool => \`
+        <li>
+          <span class="compact-name">\${esc(tool.name)}</span>
+          <span class="compact-meta">\${fmt(tool.calls)} calls\${tool.failures ? ' · ' + fmt(tool.failures) + ' failed' : ''}</span>
+        </li>
+      \`).join('');
+      const projects = codexUsage.projects.slice(0, 6).map(project => \`
+        <li title="\${esc(project.cwd)}">
+          <span class="compact-name">\${esc(project.displayName)}</span>
+          <span class="compact-meta">\${fmt(project.totalTokens)} processed</span>
+        </li>
+      \`).join('');
+      const sessions = codexUsage.topSessions.slice(0, 5).map(session => \`
+        <li title="\${esc(session.cwd || '')}">
+          <span class="compact-name">\${esc(session.projectDisplayName)}</span>
+          <span class="compact-meta">\${fmt(session.totalTokens)} processed · \${fmt(session.toolCalls)} calls\${session.toolFailures ? ' · ' + fmt(session.toolFailures) + ' failed' : ''}</span>
+        </li>
+      \`).join('');
+      const failureReasons = codexUsage.topFailureReasons.slice(0, 5).map(reason => \`
+        <li title="\${esc(reason.cwd || '')}">
+          <span class="compact-name">\${esc(reason.projectDisplayName)} · \${esc(reason.commandFamily)} · \${esc(reason.label)}</span>
+          <span class="compact-meta">\${fmt(reason.failures)} failed / \${fmt(reason.calls)} calls</span>
+        </li>
+      \`).join('');
+      const maxDaily = Math.max(1, ...codexUsage.dailyUsage.map(day => day.totalTokens));
+      const daily = codexUsage.dailyUsage.map(day => \`
+        <div class="codex-bar-row">
+          <span class="compact-meta">\${esc(day.date)}</span>
+          <div class="codex-bar-track"><div class="codex-bar-fill" style="width:\${Math.max(3, Math.round((day.totalTokens / maxDaily) * 100))}%"></div></div>
+          <span class="compact-meta">\${fmt(day.totalTokens)}</span>
+        </div>
+      \`).join('');
+      const context = codexUsage.latestContextUsagePercent === null ? 'n/a' : codexUsage.latestContextUsagePercent + '%';
+      const primaryLimit = codexUsage.latestRateLimits.primaryUsedPercent === null ? 'n/a' : codexUsage.latestRateLimits.primaryUsedPercent + '%';
+      const secondaryLimit = codexUsage.latestRateLimits.secondaryUsedPercent === null ? 'n/a' : codexUsage.latestRateLimits.secondaryUsedPercent + '%';
+      const diagnostics = codexUsage.skippedLines > 0
+        ? '<div class="codex-diagnostics">Skipped malformed lines: ' + fmt(codexUsage.skippedLines) + '</div>'
+        : '';
+
+      return \`
+        <div class="codex-section">
+          <div class="section-title">Codex Usage</div>
+          \${recommendations ? '<div class="recommendations"><div class="codex-label">Suggestions</div><ul>' + recommendations + '</ul></div>' : ''}
+          <div class="codex-grid">
+            <div class="codex-card">
+              <div class="codex-label">Sessions</div>
+              <div class="codex-value">\${fmt(codexUsage.sessionsScanned)}</div>
+            </div>
+            <div class="codex-card">
+              <div class="codex-label">Processed</div>
+              <div class="codex-value">\${fmt(codexUsage.totalTokenUsage.totalTokens)}</div>
+            </div>
+            <div class="codex-card">
+              <div class="codex-label">Latest turn</div>
+              <div class="codex-value">\${codexUsage.latestTurnTokenUsage ? fmt(codexUsage.latestTurnTokenUsage.totalTokens) : 'n/a'}</div>
+            </div>
+            <div class="codex-card">
+              <div class="codex-label">Context / limit</div>
+              <div class="codex-value">\${context} / \${primaryLimit}</div>
+            </div>
+          </div>
+          <div class="codex-columns">
+            <div>
+              <div class="codex-label">Top built-in tools</div>
+              <ul class="compact-list">\${tools || '<li><span class="compact-meta">No tool calls found</span></li>'}</ul>
+            </div>
+            <div>
+              <div class="codex-label">Top projects</div>
+              <ul class="compact-list">\${projects || '<li><span class="compact-meta">No projects found</span></li>'}</ul>
+            </div>
+          </div>
+          <div class="codex-columns codex-wide">
+            <div>
+              <div class="codex-label">Biggest sessions</div>
+              <ul class="compact-list">\${sessions || '<li><span class="compact-meta">No sessions found</span></li>'}</ul>
+            </div>
+            <div>
+              <div class="codex-label">Failure reasons</div>
+              <ul class="compact-list">\${failureReasons || '<li><span class="compact-meta">No failures found</span></li>'}</ul>
+            </div>
+          </div>
+          <div class="codex-wide">
+            <div class="codex-label">Daily usage</div>
+            <div class="codex-bars">\${daily || '<span class="compact-meta">No daily usage found</span>'}</div>
+          </div>
+          \${diagnostics}
+        </div>
+      \`;
+    }
   </script>
 </body>
 </html>`;
@@ -353,17 +497,20 @@ function renderDashboard(port: number): string {
 
 // ─── Server startup ───────────────────────────────────────────────────────────
 
-export async function startDashboard(preferredPort = 3456): Promise<void> {
+export async function startDashboard(
+  preferredPort = 3456,
+  client: ClientName = 'claude'
+): Promise<DashboardHandle> {
   const port = await findAvailablePort(preferredPort);
 
-  if (port !== preferredPort) {
+  if (preferredPort !== 0 && port !== preferredPort) {
     process.stderr.write(
       `[mcp-gauge] Port ${preferredPort} in use, using ${port} instead\n`
     );
   }
 
   // Persist the actual port so `mcp-gauge status` can find it
-  writePort(port);
+  writePort(port, client);
 
   const app = express();
   app.use(express.json());
@@ -381,7 +528,7 @@ export async function startDashboard(preferredPort = 3456): Promise<void> {
       disabled: boolean;
     };
 
-    setToolDisabled(serverName, toolName, disabled);
+    setToolDisabled(serverName, toolName, disabled, client);
     updateToolState(serverName, toolName, disabled);
 
     res.json({ ok: true });
@@ -390,6 +537,15 @@ export async function startDashboard(preferredPort = 3456): Promise<void> {
   // Current state snapshot (for `mcp-gauge status`)
   app.get('/api/state', (_req, res) => {
     res.json(getBudgetState());
+  });
+
+  app.get('/api/codex-usage', async (req, res) => {
+    const days = typeof req.query.days === 'string' ? Number(req.query.days) : undefined;
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : undefined;
+    res.json(await getCodexUsageSummary({
+      days: days !== undefined && Number.isFinite(days) && days > 0 ? days : undefined,
+      cwd,
+    }));
   });
 
   const httpServer = http.createServer(app);
@@ -421,4 +577,16 @@ export async function startDashboard(preferredPort = 3456): Promise<void> {
       resolve();
     });
   });
+
+  return {
+    port,
+    close: () => new Promise<void>((resolve, reject) => {
+      wss.close(() => {
+        httpServer.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }),
+  };
 }
