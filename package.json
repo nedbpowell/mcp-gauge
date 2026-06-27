@@ -1,6 +1,6 @@
 {
   "name": "mcp-gauge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "See exactly which MCP tools are eating your context window. Disable the deadweight.",
   "author": "Ned Powell <nedbaynepowell@gmail.com>",
