@@ -399,13 +399,13 @@ function renderDashboard(port) {
       const projects = codexUsage.projects.slice(0, 6).map(project => \`
         <li title="\${esc(project.cwd)}">
           <span class="compact-name">\${esc(project.displayName)}</span>
-          <span class="compact-meta">\${fmt(project.totalTokens)} tokens</span>
+          <span class="compact-meta">\${fmt(project.totalTokens)} processed</span>
         </li>
       \`).join('');
       const sessions = codexUsage.topSessions.slice(0, 5).map(session => \`
         <li title="\${esc(session.cwd || '')}">
           <span class="compact-name">\${esc(session.projectDisplayName)}</span>
-          <span class="compact-meta">\${fmt(session.totalTokens)} tokens · \${fmt(session.toolCalls)} calls\${session.toolFailures ? ' · ' + fmt(session.toolFailures) + ' failed' : ''}</span>
+          <span class="compact-meta">\${fmt(session.totalTokens)} processed · \${fmt(session.toolCalls)} calls\${session.toolFailures ? ' · ' + fmt(session.toolFailures) + ' failed' : ''}</span>
         </li>
       \`).join('');
       const hotspots = codexUsage.failureHotspots.slice(0, 5).map(hotspot => \`
@@ -439,16 +439,16 @@ function renderDashboard(port) {
               <div class="codex-value">\${fmt(codexUsage.sessionsScanned)}</div>
             </div>
             <div class="codex-card">
-              <div class="codex-label">Tokens</div>
+              <div class="codex-label">Processed</div>
               <div class="codex-value">\${fmt(codexUsage.totalTokenUsage.totalTokens)}</div>
             </div>
             <div class="codex-card">
-              <div class="codex-label">Context</div>
-              <div class="codex-value">\${context}</div>
+              <div class="codex-label">Latest turn</div>
+              <div class="codex-value">\${codexUsage.latestTurnTokenUsage ? fmt(codexUsage.latestTurnTokenUsage.totalTokens) : 'n/a'}</div>
             </div>
             <div class="codex-card">
-              <div class="codex-label">Rate limits</div>
-              <div class="codex-value">\${primaryLimit} / \${secondaryLimit}</div>
+              <div class="codex-label">Context / limit</div>
+              <div class="codex-value">\${context} / \${primaryLimit}</div>
             </div>
           </div>
           <div class="codex-columns">

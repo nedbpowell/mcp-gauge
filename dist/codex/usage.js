@@ -106,6 +106,7 @@ export async function getCodexUsageSummary(options = {}) {
         }
     }
     const latestSessionWithContext = sessionSummaries.find((session) => session.lastTokenUsage && session.modelContextWindow && session.modelContextWindow > 0);
+    const latestSessionWithTokens = sessionSummaries.find((session) => session.lastTokenUsage);
     const projectSummaries = Array.from(projects.values())
         .sort((a, b) => b.totalTokens - a.totalTokens || b.toolCalls - a.toolCalls || a.cwd.localeCompare(b.cwd));
     const dailySummaries = Array.from(dailyUsage.values())
@@ -125,6 +126,7 @@ export async function getCodexUsageSummary(options = {}) {
         sessionsScanned: sessionSummaries.length,
         sessionsWithTokens,
         totalTokenUsage,
+        latestTurnTokenUsage: latestSessionWithTokens?.lastTokenUsage ?? null,
         latestContextUsagePercent: latestSessionWithContext?.lastTokenUsage && latestSessionWithContext.modelContextWindow
             ? Math.round((latestSessionWithContext.lastTokenUsage.totalTokens / latestSessionWithContext.modelContextWindow) * 100)
             : null,
@@ -159,7 +161,10 @@ export function formatCodexUsageStatus(summary) {
     const lines = [];
     lines.push(`Codex Usage (${summary.days}d)`);
     lines.push(`  Sessions: ${summary.sessionsScanned.toLocaleString()} (${summary.sessionsWithTokens.toLocaleString()} with token data)`);
-    lines.push(`  Tokens: ${summary.totalTokenUsage.totalTokens.toLocaleString()} total, ${summary.totalTokenUsage.inputTokens.toLocaleString()} input, ${summary.totalTokenUsage.outputTokens.toLocaleString()} output`);
+    lines.push(`  Processed: ${summary.totalTokenUsage.totalTokens.toLocaleString()} model tokens (cumulative, not context)`);
+    if (summary.latestTurnTokenUsage) {
+        lines.push(`  Latest turn: ${summary.latestTurnTokenUsage.totalTokens.toLocaleString()} tokens`);
+    }
     if (summary.latestContextUsagePercent !== null) {
         lines.push(`  Latest context: ${summary.latestContextUsagePercent}% used`);
     }
@@ -169,13 +174,13 @@ export function formatCodexUsageStatus(summary) {
     if (summary.projects.length > 0) {
         lines.push('  Top projects:');
         for (const project of summary.projects.slice(0, 5)) {
-            lines.push(`    ${project.displayName.padEnd(36)} ${project.totalTokens.toLocaleString()} tokens · ${project.sessions} sessions`);
+            lines.push(`    ${formatName(project.displayName, 44)} ${project.totalTokens.toLocaleString()} processed · ${project.sessions} sessions`);
         }
     }
     if (summary.failureHotspots.length > 0) {
         lines.push('  Failure hotspots:');
         for (const hotspot of summary.failureHotspots.slice(0, 3)) {
-            lines.push(`    ${hotspot.projectDisplayName.padEnd(28)} ${hotspot.toolName.padEnd(18)} ${hotspot.failures} failed`);
+            lines.push(`    ${formatName(hotspot.projectDisplayName, 34)} ${formatName(hotspot.toolName, 18)} ${hotspot.failures} failed`);
         }
     }
     if (summary.recommendations.length > 0) {
@@ -195,7 +200,7 @@ export function formatCodexUsageSummary(summary) {
         const maxTokens = Math.max(...summary.dailyUsage.map((day) => day.totalTokens), 1);
         for (const day of summary.dailyUsage) {
             const bar = '█'.repeat(Math.max(1, Math.round((day.totalTokens / maxTokens) * 16)));
-            lines.push(`  ${day.date}  ${day.totalTokens.toLocaleString().padStart(12)} tokens  ${bar}`);
+            lines.push(`  ${day.date}  ${day.totalTokens.toLocaleString().padStart(12)} processed  ${bar}`);
         }
     }
     if (summary.topSessions.length > 0) {
@@ -203,7 +208,8 @@ export function formatCodexUsageSummary(summary) {
         lines.push('Biggest sessions:');
         for (const session of summary.topSessions.slice(0, 5)) {
             const duration = session.durationMs === null ? 'n/a' : formatDuration(session.durationMs);
-            lines.push(`  ${session.projectDisplayName.padEnd(36)} ${session.totalTokens.toLocaleString().padStart(12)} tokens · ${session.toolCalls} calls · ${session.toolFailures} failed · ${duration}`);
+            const classification = classifySession(session);
+            lines.push(`  ${formatName(session.projectDisplayName, 36)} ${session.totalTokens.toLocaleString().padStart(12)} processed · ${session.toolCalls} calls · ${session.toolFailures} failed · ${duration} · ${classification}`);
         }
     }
     if (summary.toolCalls.length > 0) {
@@ -218,7 +224,7 @@ export function formatCodexUsageSummary(summary) {
         lines.push('');
         lines.push('Failure hotspots:');
         for (const hotspot of summary.failureHotspots.slice(0, 8)) {
-            lines.push(`  ${hotspot.projectDisplayName.padEnd(36)} ${hotspot.toolName.padEnd(20)} ${hotspot.failures} failed / ${hotspot.calls} calls`);
+            lines.push(`  ${formatName(hotspot.projectDisplayName, 36)} ${formatName(hotspot.toolName, 20)} ${hotspot.failures} failed / ${hotspot.calls} calls`);
         }
     }
     if (summary.skippedLines > 0) {
@@ -503,6 +509,12 @@ function buildRecommendations(summary, basenameCounts) {
             message: 'Primary rate-limit pressure is high; pause large jobs or use smaller scoped asks.',
         });
     }
+    else if ((summary.latestRateLimits.primaryUsedPercent ?? 0) >= 80) {
+        recommendations.push({
+            severity: 'info',
+            message: 'Primary rate-limit pressure is elevated; keep the next few asks smaller if you need to keep working continuously.',
+        });
+    }
     if ((summary.latestContextUsagePercent ?? 0) >= 75) {
         recommendations.push({
             severity: 'warning',
@@ -514,7 +526,7 @@ function buildRecommendations(summary, basenameCounts) {
     if (hotspot) {
         recommendations.push({
             severity: 'warning',
-            message: `${hotspot.projectDisplayName} has repeated ${hotspot.toolName} failures; give an exact repo path, ask Codex to inspect first, or narrow the task.`,
+            message: `${hotspot.projectDisplayName} has repeated ${hotspot.toolName} failures; ask Codex to inspect before running commands or narrow the task.`,
         });
     }
     const topCount = Math.max(1, Math.ceil(summary.topSessions.length * 0.1));
@@ -545,4 +557,17 @@ function formatDuration(durationMs) {
     if (minutes > 0)
         return `${minutes}m ${seconds}s`;
     return `${seconds}s`;
+}
+function formatName(value, width) {
+    if (value.length > width) {
+        return `${value.slice(0, Math.max(1, width - 1))}…`;
+    }
+    return value.padEnd(width);
+}
+function classifySession(session) {
+    if (session.toolFailures >= 5)
+        return 'high friction';
+    if (session.totalTokens > 0 && session.toolFailures <= 1)
+        return 'likely deep work';
+    return 'normal';
 }

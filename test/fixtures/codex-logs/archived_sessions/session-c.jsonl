@@ -1,0 +1,12 @@
+{"timestamp":"2026-06-24T08:00:00.000Z","type":"session_meta","payload":{"id":"session-c","timestamp":"2026-06-24T08:00:00.000Z","cwd":"/var/tmp/project-a","originator":"Codex Desktop","cli_version":"0.1.0","source":"vscode","model_provider":"openai"}}
+{"timestamp":"2026-06-24T08:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":100,"output_tokens":100,"reasoning_output_tokens":10,"total_tokens":1000},"last_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":2,"total_tokens":120},"model_context_window":1000},"rate_limits":{"primary":{"used_percent":95},"secondary":{"used_percent":5}}}}
+{"timestamp":"2026-06-24T08:01:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"secret failure 1\"}","call_id":"call-c1"}}
+{"timestamp":"2026-06-24T08:01:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-c1","output":"Process exited with code 1\nsecret output 1"}}
+{"timestamp":"2026-06-24T08:02:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"secret failure 2\"}","call_id":"call-c2"}}
+{"timestamp":"2026-06-24T08:02:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-c2","output":"Process exited with code 1\nsecret output 2"}}
+{"timestamp":"2026-06-24T08:03:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"secret failure 3\"}","call_id":"call-c3"}}
+{"timestamp":"2026-06-24T08:03:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-c3","output":"Process exited with code 1\nsecret output 3"}}
+{"timestamp":"2026-06-24T08:04:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"secret failure 4\"}","call_id":"call-c4"}}
+{"timestamp":"2026-06-24T08:04:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-c4","output":"Process exited with code 1\nsecret output 4"}}
+{"timestamp":"2026-06-24T08:05:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"secret failure 5\"}","call_id":"call-c5"}}
+{"timestamp":"2026-06-24T08:05:01.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-c5","output":"Process exited with code 1\nsecret output 5"}}

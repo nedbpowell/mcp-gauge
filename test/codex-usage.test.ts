@@ -40,6 +40,7 @@ test('Codex usage scanner aggregates insights without retaining raw arguments or
   assert.equal(summary.sessionsScanned, 4);
   assert.equal(summary.sessionsWithTokens, 3);
   assert.equal(summary.totalTokenUsage.totalTokens, 6240);
+  assert.equal(summary.latestTurnTokenUsage?.totalTokens, 36);
   assert.equal(summary.latestContextUsagePercent, 4);
   assert.deepEqual(summary.latestRateLimits, {
     primaryUsedPercent: 3,
@@ -105,12 +106,15 @@ test('Codex usage formatter is human-readable', async () => {
   const compact = formatCodexUsageStatus(summary);
   const output = formatCodexUsageSummary(summary);
   assert.match(compact, /Suggestions:/);
+  assert.match(compact, /Processed: 6,240 model tokens \(cumulative, not context\)/);
+  assert.match(compact, /Latest turn: 36 tokens/);
   assert.doesNotMatch(compact, /Daily usage:/);
   assert.match(output, /Codex Usage \(7d\)/);
-  assert.match(output, /Tokens: 6,240 total/);
+  assert.match(output, /Processed: 6,240 model tokens/);
   assert.match(output, /Daily usage:/);
   assert.match(output, /Biggest sessions:/);
   assert.match(output, /Failure hotspots:/);
+  assert.match(output, /likely deep work/);
   assert.match(output, /exec_command/);
 });
 
@@ -136,6 +140,7 @@ test('codex-usage CLI supports JSON and status fallback without a running proxy'
     const parsed = JSON.parse(jsonRun.stdout) as {
       sessionsScanned: number;
       totalTokenUsage: { totalTokens: number };
+      latestTurnTokenUsage: { totalTokens: number } | null;
       dailyUsage: unknown[];
       topSessions: unknown[];
       failureHotspots: unknown[];
@@ -143,6 +148,7 @@ test('codex-usage CLI supports JSON and status fallback without a running proxy'
     };
     assert.equal(parsed.sessionsScanned, 4);
     assert.equal(parsed.totalTokenUsage.totalTokens, 6240);
+    assert.equal(parsed.latestTurnTokenUsage?.totalTokens, 36);
     assert.equal(parsed.dailyUsage.length, 4);
     assert.equal(parsed.topSessions.length, 4);
     assert.equal(parsed.failureHotspots.length, 2);

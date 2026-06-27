@@ -61,7 +61,8 @@ For Codex, mcp-gauge also summarizes your local Codex session logs:
 ```text
 Codex Usage (7d)
   Sessions: 22 (22 with token data)
-  Tokens: 117,592,599 total, 117,070,096 input, 522,503 output
+  Processed: 117,592,599 model tokens (cumulative, not context)
+  Latest turn: 91,204 tokens
   Latest context: 35% used
   Rate limits: primary 73%, secondary 27%
   Top projects:
@@ -101,11 +102,13 @@ Your real servers run exactly as before. mcp-gauge adds zero latency to tool cal
 Codex support has two parts:
 
 - **MCP proxy tracking:** local stdio MCP servers are proxied, measured, and can be disabled from the dashboard.
-- **Codex log insights:** local Codex session logs are read retrospectively to show token usage, context pressure, rate-limit pressure, top projects, expensive sessions, failed tool-call hotspots, and suggestions.
+- **Codex log insights:** local Codex session logs are read retrospectively to show processed model tokens, context pressure, rate-limit pressure, top projects, expensive sessions, failed tool-call hotspots, and suggestions.
 
 Codex usage tracking works even with zero MCP servers installed. In that case, `mcp-gauge status --client codex` still reports Codex usage from local logs, and the dashboard shows the Codex Usage section.
 
 This log-based view is read-only and retrospective. It cannot disable built-in Codex tools, app tools, or plugin tools; only proxied MCP tools can be toggled by mcp-gauge.
+
+The processed-token total is cumulative across model calls in the selected window. It is not the same thing as current context size, unique prompt text, or estimated billing.
 
 ## Adding new MCP servers
 

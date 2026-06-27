@@ -77,6 +77,7 @@ export interface CodexUsageSummary {
     sessionsScanned: number;
     sessionsWithTokens: number;
     totalTokenUsage: TokenUsage;
+    latestTurnTokenUsage: TokenUsage | null;
     latestContextUsagePercent: number | null;
     latestRateLimits: {
         primaryUsedPercent: number | null;
