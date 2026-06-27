@@ -23,7 +23,6 @@ import {
   writeClaudeConfig,
   writeCodexConfigText,
   backupClaudeConfig,
-  getCodexBackupPath,
   getClaudeConfigPath,
   getCodexConfigPath,
   readCodexBackupText,
@@ -270,16 +269,17 @@ function runClaudeUninstall(): void {
 }
 
 function runCodexUninstall(): void {
-  const backupPath = getCodexBackupPath();
+  const backupText = readCodexBackupText();
 
-  if (!fs.existsSync(backupPath) && readCodexBackupText() === null) {
+  if (backupText === null) {
     console.error(chalk.red('✗ No backup found. Cannot restore original Codex config.'));
     process.exit(1);
   }
 
-  const configText = readCodexConfigText();
   const allServers = readLaunchConfig('codex');
-  const restored = restoreCodexMcpServers(configText, allServers);
+  const restored = Object.keys(allServers).length > 0
+    ? restoreCodexMcpServers(readCodexConfigText(), allServers)
+    : backupText;
 
   fs.writeFileSync(getCodexConfigPath(), restored, 'utf-8');
 

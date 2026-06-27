@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { runInit } from '../src/cli/init.js';
+import { runInit, runUninstall } from '../src/cli/init.js';
 import {
   readCodexStdioServers,
   readLaunchConfig,
@@ -272,6 +272,60 @@ url = "https://example.com/mcp"
       delete process.env.PATH;
     } else {
       process.env.PATH = previousPath;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('Codex uninstall restores from backup when launch state is missing', () => {
+  const previousHome = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gauge-home-'));
+  process.env.HOME = home;
+
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => undefined;
+  console.error = () => undefined;
+
+  try {
+    const codexDir = path.join(home, '.codex');
+    const backupDir = path.join(home, '.mcp-gauge', 'clients', 'codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.mkdirSync(backupDir, { recursive: true });
+
+    const originalConfig = `
+model = "gpt-5"
+
+[mcp_servers.local]
+command = "node"
+args = ["server.js"]
+`;
+    fs.writeFileSync(path.join(backupDir, 'config_backup.toml'), originalConfig, 'utf-8');
+    fs.writeFileSync(
+      path.join(codexDir, 'config.toml'),
+      `
+model = "gpt-5"
+
+[mcp_servers.__mcp_gauge_proxy__]
+command = "/usr/local/bin/mcp-gauge"
+args = ["proxy", "--client", "codex"]
+`,
+      'utf-8'
+    );
+
+    runUninstall('codex');
+
+    const restored = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    assert.match(restored, /\[mcp_servers\.local\]/);
+    assert.match(restored, /command = "node"/);
+    assert.doesNotMatch(restored, /__mcp_gauge_proxy__/);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
     }
     fs.rmSync(home, { recursive: true, force: true });
   }
