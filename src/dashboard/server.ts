@@ -419,10 +419,10 @@ function renderDashboard(port: number): string {
           <span class="compact-meta">\${fmt(session.totalTokens)} processed · \${fmt(session.toolCalls)} calls\${session.toolFailures ? ' · ' + fmt(session.toolFailures) + ' failed' : ''}</span>
         </li>
       \`).join('');
-      const hotspots = codexUsage.failureHotspots.slice(0, 5).map(hotspot => \`
-        <li title="\${esc(hotspot.cwd || '')}">
-          <span class="compact-name">\${esc(hotspot.projectDisplayName)} · \${esc(hotspot.toolName)}</span>
-          <span class="compact-meta">\${fmt(hotspot.failures)} failed / \${fmt(hotspot.calls)} calls</span>
+      const failureReasons = codexUsage.topFailureReasons.slice(0, 5).map(reason => \`
+        <li title="\${esc(reason.cwd || '')}">
+          <span class="compact-name">\${esc(reason.projectDisplayName)} · \${esc(reason.commandFamily)} · \${esc(reason.label)}</span>
+          <span class="compact-meta">\${fmt(reason.failures)} failed / \${fmt(reason.calls)} calls</span>
         </li>
       \`).join('');
       const maxDaily = Math.max(1, ...codexUsage.dailyUsage.map(day => day.totalTokens));
@@ -478,8 +478,8 @@ function renderDashboard(port: number): string {
               <ul class="compact-list">\${sessions || '<li><span class="compact-meta">No sessions found</span></li>'}</ul>
             </div>
             <div>
-              <div class="codex-label">Failure hotspots</div>
-              <ul class="compact-list">\${hotspots || '<li><span class="compact-meta">No failures found</span></li>'}</ul>
+              <div class="codex-label">Failure reasons</div>
+              <ul class="compact-list">\${failureReasons || '<li><span class="compact-meta">No failures found</span></li>'}</ul>
             </div>
           </div>
           <div class="codex-wide">

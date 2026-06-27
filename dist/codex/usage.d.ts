@@ -42,6 +42,19 @@ export interface CodexFailureHotspot {
     calls: number;
     failures: number;
 }
+export type CodexFailureCategory = 'missing_path' | 'no_matches' | 'shell_glob' | 'test_or_build_failure' | 'timeout_or_truncated' | 'command_error' | 'tool_error';
+export interface CodexFailureReason {
+    cwd: string | null;
+    projectName: string;
+    projectDisplayName: string;
+    toolName: string;
+    commandFamily: string;
+    category: CodexFailureCategory;
+    label: string;
+    recommendation: string;
+    calls: number;
+    failures: number;
+}
 export interface CodexRecommendation {
     severity: 'info' | 'warning';
     message: string;
@@ -66,6 +79,7 @@ export interface CodexSessionUsageSummary {
     durationMs: number | null;
     toolCalls: number;
     toolFailures: number;
+    failureReasons: CodexFailureReason[];
 }
 export interface CodexUsageSummary {
     generatedAt: string;
@@ -88,6 +102,8 @@ export interface CodexUsageSummary {
     dailyUsage: CodexDailyUsageSummary[];
     topSessions: CodexSessionUsageSummary[];
     failureHotspots: CodexFailureHotspot[];
+    failureReasons: CodexFailureReason[];
+    topFailureReasons: CodexFailureReason[];
     recommendations: CodexRecommendation[];
     recentSessions: CodexSessionUsageSummary[];
 }

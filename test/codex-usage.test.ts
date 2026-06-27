@@ -24,6 +24,7 @@ test('Codex usage scanner discovers active and archived JSONL logs', async () =>
     path.join('archived_sessions', 'session-b.jsonl'),
     path.join('archived_sessions', 'session-c.jsonl'),
     path.join('archived_sessions', 'session-d.jsonl'),
+    path.join('archived_sessions', 'session-e.jsonl'),
     path.join('sessions', '2026', '06', 'session-a.jsonl'),
   ]);
 });
@@ -35,11 +36,11 @@ test('Codex usage scanner aggregates insights without retaining raw arguments or
     days: 7,
   });
 
-  assert.equal(summary.filesScanned, 5);
+  assert.equal(summary.filesScanned, 6);
   assert.equal(summary.skippedLines, 1);
-  assert.equal(summary.sessionsScanned, 4);
-  assert.equal(summary.sessionsWithTokens, 3);
-  assert.equal(summary.totalTokenUsage.totalTokens, 6240);
+  assert.equal(summary.sessionsScanned, 5);
+  assert.equal(summary.sessionsWithTokens, 4);
+  assert.equal(summary.totalTokenUsage.totalTokens, 6840);
   assert.equal(summary.latestTurnTokenUsage?.totalTokens, 36);
   assert.equal(summary.latestContextUsagePercent, 4);
   assert.deepEqual(summary.latestRateLimits, {
@@ -52,7 +53,7 @@ test('Codex usage scanner aggregates insights without retaining raw arguments or
     calls: tool.calls,
     failures: tool.failures,
   })).slice(0, 2), [
-    { name: 'exec_command', calls: 7, failures: 6 },
+    { name: 'exec_command', calls: 12, failures: 11 },
     { name: 'read_thread_terminal', calls: 1, failures: 0 },
   ]);
 
@@ -61,6 +62,7 @@ test('Codex usage scanner aggregates insights without retaining raw arguments or
     totalTokens: day.totalTokens,
     toolFailures: day.toolFailures,
   })), [
+    { date: '2026-06-22', totalTokens: 600, toolFailures: 6 },
     { date: '2026-06-23', totalTokens: 5000, toolFailures: 0 },
     { date: '2026-06-24', totalTokens: 1000, toolFailures: 5 },
     { date: '2026-06-25', totalTokens: 0, toolFailures: 0 },
@@ -77,13 +79,44 @@ test('Codex usage scanner aggregates insights without retaining raw arguments or
     toolName: hotspot.toolName,
     failures: hotspot.failures,
   })).slice(0, 2), [
+    { projectDisplayName: 'failure-lab', toolName: 'exec_command', failures: 5 },
     { projectDisplayName: 'project-a (/var/tmp/project-a)', toolName: 'exec_command', failures: 5 },
-    { projectDisplayName: 'project-a (/tmp/project-a)', toolName: 'exec_command', failures: 1 },
   ]);
-  assert.match(summary.recommendations.map((rec) => rec.message).join('\n'), /repeated exec_command failures/);
+  assert.deepEqual(summary.topFailureReasons.map((reason) => ({
+    projectDisplayName: reason.projectDisplayName,
+    commandFamily: reason.commandFamily,
+    category: reason.category,
+    failures: reason.failures,
+  })).slice(0, 4), [
+    { projectDisplayName: 'project-a (/var/tmp/project-a)', commandFamily: 'other', category: 'command_error', failures: 5 },
+    { projectDisplayName: 'failure-lab', commandFamily: 'rg', category: 'missing_path', failures: 1 },
+    { projectDisplayName: 'failure-lab', commandFamily: 'rg', category: 'no_matches', failures: 1 },
+    { projectDisplayName: 'failure-lab', commandFamily: 'rg', category: 'shell_glob', failures: 1 },
+  ]);
+  assert.deepEqual(
+    new Set(summary.failureReasons.map((reason) => reason.category)),
+    new Set([
+      'command_error',
+      'missing_path',
+      'no_matches',
+      'shell_glob',
+      'test_or_build_failure',
+      'timeout_or_truncated',
+      'tool_error',
+    ])
+  );
+  assert.deepEqual(summary.recentSessions.find((session) => session.id === 'session-e')?.failureReasons.map((reason) => reason.category).sort(), [
+    'missing_path',
+    'no_matches',
+    'shell_glob',
+    'test_or_build_failure',
+    'timeout_or_truncated',
+    'tool_error',
+  ]);
+  assert.match(summary.recommendations.map((rec) => rec.message).join('\n'), /Inspect the command result before retrying/);
   assert.match(summary.recommendations.map((rec) => rec.message).join('\n'), /deep work, not obvious waste/);
   assert.match(summary.recommendations.map((rec) => rec.message).join('\n'), /same folder name/);
-  assert.doesNotMatch(JSON.stringify(summary), /secret command|secret output|secret failure|secret success/);
+  assert.doesNotMatch(JSON.stringify(summary), /secret command|secret output|secret failure|secret success|SECRET_/);
 
   const cwdSummary = await getCodexUsageSummary({
     codexHome: fixtureCodexHome,
@@ -106,14 +139,18 @@ test('Codex usage formatter is human-readable', async () => {
   const compact = formatCodexUsageStatus(summary);
   const output = formatCodexUsageSummary(summary);
   assert.match(compact, /Suggestions:/);
-  assert.match(compact, /Processed: 6,240 model tokens \(cumulative, not context\)/);
+  assert.match(compact, /Processed: 6,840 model tokens \(cumulative, not context\)/);
   assert.match(compact, /Latest turn: 36 tokens/);
+  assert.match(compact, /Failure reasons:/);
+  assert.doesNotMatch(compact, /Failure hotspots:/);
   assert.doesNotMatch(compact, /Daily usage:/);
   assert.match(output, /Codex Usage \(7d\)/);
-  assert.match(output, /Processed: 6,240 model tokens/);
+  assert.match(output, /Processed: 6,840 model tokens/);
   assert.match(output, /Daily usage:/);
   assert.match(output, /Biggest sessions:/);
-  assert.match(output, /Failure hotspots:/);
+  assert.match(output, /Failure reasons:/);
+  assert.match(output, /Read the first failing test or build error/);
+  assert.match(output, /Quote globs or use rg --files/);
   assert.match(output, /likely deep work/);
   assert.match(output, /exec_command/);
 });
@@ -144,15 +181,20 @@ test('codex-usage CLI supports JSON and status fallback without a running proxy'
       dailyUsage: unknown[];
       topSessions: unknown[];
       failureHotspots: unknown[];
+      failureReasons: unknown[];
+      topFailureReasons: unknown[];
       recommendations: unknown[];
     };
-    assert.equal(parsed.sessionsScanned, 4);
-    assert.equal(parsed.totalTokenUsage.totalTokens, 6240);
+    assert.equal(parsed.sessionsScanned, 5);
+    assert.equal(parsed.totalTokenUsage.totalTokens, 6840);
     assert.equal(parsed.latestTurnTokenUsage?.totalTokens, 36);
-    assert.equal(parsed.dailyUsage.length, 4);
-    assert.equal(parsed.topSessions.length, 4);
-    assert.equal(parsed.failureHotspots.length, 2);
+    assert.equal(parsed.dailyUsage.length, 5);
+    assert.equal(parsed.topSessions.length, 5);
+    assert.equal(parsed.failureHotspots.length, 4);
+    assert.equal(parsed.failureReasons.length >= 8, true);
+    assert.equal(parsed.topFailureReasons.length >= 8, true);
     assert.equal(parsed.recommendations.length >= 2, true);
+    assert.doesNotMatch(jsonRun.stdout, /SECRET_/);
 
     const statusRun = spawnSync(
       process.execPath,
@@ -162,6 +204,7 @@ test('codex-usage CLI supports JSON and status fallback without a running proxy'
     assert.equal(statusRun.status, 0, statusRun.stderr);
     assert.match(statusRun.stdout, /Codex Usage \(7d\)/);
     assert.match(statusRun.stdout, /Suggestions:/);
+    assert.match(statusRun.stdout, /Failure reasons:/);
     assert.doesNotMatch(statusRun.stdout, /Daily usage:/);
     assert.match(statusRun.stdout, /only Codex log usage is shown/);
   } finally {
@@ -186,12 +229,15 @@ test('dashboard exposes Codex usage API with no MCP upstreams', async () => {
         dailyUsage: unknown[];
         topSessions: unknown[];
         failureHotspots: unknown[];
+        topFailureReasons: unknown[];
       };
-      assert.equal(body.sessionsScanned, 4);
-      assert.equal(body.totalTokenUsage.totalTokens, 6240);
-      assert.equal(body.dailyUsage.length, 4);
-      assert.equal(body.topSessions.length, 4);
-      assert.equal(body.failureHotspots.length, 2);
+      assert.equal(body.sessionsScanned, 5);
+      assert.equal(body.totalTokenUsage.totalTokens, 6840);
+      assert.equal(body.dailyUsage.length, 5);
+      assert.equal(body.topSessions.length, 5);
+      assert.equal(body.failureHotspots.length, 4);
+      assert.equal(body.topFailureReasons.length >= 8, true);
+      assert.doesNotMatch(JSON.stringify(body), /SECRET_/);
     } finally {
       await dashboard.close();
     }

@@ -53,6 +53,28 @@ export interface CodexFailureHotspot {
   failures: number;
 }
 
+export type CodexFailureCategory =
+  | 'missing_path'
+  | 'no_matches'
+  | 'shell_glob'
+  | 'test_or_build_failure'
+  | 'timeout_or_truncated'
+  | 'command_error'
+  | 'tool_error';
+
+export interface CodexFailureReason {
+  cwd: string | null;
+  projectName: string;
+  projectDisplayName: string;
+  toolName: string;
+  commandFamily: string;
+  category: CodexFailureCategory;
+  label: string;
+  recommendation: string;
+  calls: number;
+  failures: number;
+}
+
 export interface CodexRecommendation {
   severity: 'info' | 'warning';
   message: string;
@@ -78,6 +100,7 @@ export interface CodexSessionUsageSummary {
   durationMs: number | null;
   toolCalls: number;
   toolFailures: number;
+  failureReasons: CodexFailureReason[];
 }
 
 export interface CodexUsageSummary {
@@ -101,6 +124,8 @@ export interface CodexUsageSummary {
   dailyUsage: CodexDailyUsageSummary[];
   topSessions: CodexSessionUsageSummary[];
   failureHotspots: CodexFailureHotspot[];
+  failureReasons: CodexFailureReason[];
+  topFailureReasons: CodexFailureReason[];
   recommendations: CodexRecommendation[];
   recentSessions: CodexSessionUsageSummary[];
 }
@@ -119,10 +144,12 @@ interface SessionAccumulator {
   modelContextWindow: number | null;
   primaryRateLimitUsedPercent: number | null;
   secondaryRateLimitUsedPercent: number | null;
-  callIdToToolName: Map<string, string>;
+  callIdToToolCall: Map<string, SanitizedToolCall>;
   toolCalls: Map<string, number>;
   toolFailures: Map<string, number>;
   toolOutputTokenEstimate: Map<string, number>;
+  commandFamilyCalls: Map<string, number>;
+  failureReasons: Map<string, CodexFailureReason>;
 }
 
 interface ParsedRecord {
@@ -130,6 +157,32 @@ interface ParsedRecord {
   type?: unknown;
   payload?: unknown;
 }
+
+interface SanitizedToolCall {
+  toolName: string;
+  commandFamily: string;
+}
+
+const allowedCommandFamilies = new Set([
+  'rg',
+  'npm',
+  'bun',
+  'yarn',
+  'pnpm',
+  'git',
+  'tsc',
+  'python',
+  'node',
+  'deno',
+  'vitest',
+  'jest',
+  'cargo',
+  'go',
+  'make',
+  'cmake',
+  'swift',
+  'xcodebuild',
+]);
 
 export async function getCodexUsageSummary(
   options: CodexUsageOptions = {}
@@ -161,6 +214,7 @@ export async function getCodexUsageSummary(
   const projects = new Map<string, CodexProjectUsageSummary>();
   const dailyUsage = new Map<string, CodexDailyUsageSummary>();
   const failureHotspots = new Map<string, CodexFailureHotspot>();
+  const failureReasons = new Map<string, CodexFailureReason>();
   let sessionsWithTokens = 0;
   const basenameCounts = countBy(
     sessionSummaries
@@ -183,6 +237,15 @@ export async function getCodexUsageSummary(
 
     const acc = sessions.get(session.id);
     if (acc) {
+      session.failureReasons = Array.from(acc.failureReasons.values())
+        .map((reason) => ({
+          ...reason,
+          projectName: session.projectName,
+          projectDisplayName: session.projectDisplayName,
+          calls: acc.commandFamilyCalls.get(commandFamilyKey(reason.toolName, reason.commandFamily)) ?? reason.failures,
+        }))
+        .sort(sortFailureReasons);
+
       for (const [toolName, calls] of acc.toolCalls.entries()) {
         const current = toolCalls.get(toolName) ?? {
           name: toolName,
@@ -210,6 +273,21 @@ export async function getCodexUsageSummary(
           currentHotspot.failures += failures;
           failureHotspots.set(key, currentHotspot);
         }
+      }
+
+      for (const reason of session.failureReasons) {
+        const key = failureReasonKey(session.cwd, reason.toolName, reason.commandFamily, reason.category);
+        const currentReason = failureReasons.get(key) ?? {
+          ...reason,
+          cwd: session.cwd,
+          projectName: session.projectName,
+          projectDisplayName: session.projectDisplayName,
+          calls: 0,
+          failures: 0,
+        };
+        currentReason.failures += reason.failures;
+        currentReason.calls = acc.commandFamilyCalls.get(commandFamilyKey(reason.toolName, reason.commandFamily)) ?? currentReason.calls;
+        failureReasons.set(key, currentReason);
       }
     }
 
@@ -261,6 +339,7 @@ export async function getCodexUsageSummary(
     .slice(0, options.maxRecentSessions ?? 10);
   const hotspotSummaries = Array.from(failureHotspots.values())
     .sort((a, b) => b.failures - a.failures || b.calls - a.calls || a.projectDisplayName.localeCompare(b.projectDisplayName));
+  const failureReasonSummaries = Array.from(failureReasons.values()).sort(sortFailureReasons);
 
   const summary: CodexUsageSummary = {
     generatedAt: now.toISOString(),
@@ -286,6 +365,8 @@ export async function getCodexUsageSummary(
     dailyUsage: dailySummaries,
     topSessions,
     failureHotspots: hotspotSummaries,
+    failureReasons: failureReasonSummaries,
+    topFailureReasons: failureReasonSummaries.slice(0, options.maxRecentSessions ?? 10),
     recommendations: [],
     recentSessions: sessionSummaries.slice(0, options.maxRecentSessions ?? 10),
   };
@@ -327,10 +408,10 @@ export function formatCodexUsageStatus(summary: CodexUsageSummary): string {
       lines.push(`    ${formatName(project.displayName, 44)} ${project.totalTokens.toLocaleString()} processed · ${project.sessions} sessions`);
     }
   }
-  if (summary.failureHotspots.length > 0) {
-    lines.push('  Failure hotspots:');
-    for (const hotspot of summary.failureHotspots.slice(0, 3)) {
-      lines.push(`    ${formatName(hotspot.projectDisplayName, 34)} ${formatName(hotspot.toolName, 18)} ${hotspot.failures} failed`);
+  if (summary.topFailureReasons.length > 0) {
+    lines.push('  Failure reasons:');
+    for (const reason of summary.topFailureReasons.slice(0, 3)) {
+      lines.push(`    ${formatName(reason.projectDisplayName, 30)} ${formatName(reason.commandFamily, 10)} ${formatName(reason.label, 22)} ${reason.failures} failed`);
     }
   }
   if (summary.recommendations.length > 0) {
@@ -371,11 +452,12 @@ export function formatCodexUsageSummary(summary: CodexUsageSummary): string {
       lines.push(`  ${tool.name.padEnd(28)} ${tool.calls.toString().padStart(4)} calls${failures}`);
     }
   }
-  if (summary.failureHotspots.length > 0) {
+  if (summary.topFailureReasons.length > 0) {
     lines.push('');
-    lines.push('Failure hotspots:');
-    for (const hotspot of summary.failureHotspots.slice(0, 8)) {
-      lines.push(`  ${formatName(hotspot.projectDisplayName, 36)} ${formatName(hotspot.toolName, 20)} ${hotspot.failures} failed / ${hotspot.calls} calls`);
+    lines.push('Failure reasons:');
+    for (const reason of summary.topFailureReasons.slice(0, 8)) {
+      lines.push(`  ${formatName(reason.projectDisplayName, 36)} ${formatName(reason.commandFamily, 10)} ${formatName(reason.label, 24)} ${reason.failures} failed / ${reason.calls} calls`);
+      lines.push(`    ${reason.recommendation}`);
     }
   }
   if (summary.skippedLines > 0) {
@@ -446,8 +528,15 @@ async function parseCodexLogFile(
       const toolName = asString(payload.name);
       const callId = asString(payload.call_id);
       if (!toolName) continue;
+      const commandFamily = toolName === 'exec_command'
+        ? commandFamilyFromArguments(payload.arguments)
+        : toolName;
       session.toolCalls.set(toolName, (session.toolCalls.get(toolName) ?? 0) + 1);
-      if (callId) session.callIdToToolName.set(callId, toolName);
+      session.commandFamilyCalls.set(
+        commandFamilyKey(toolName, commandFamily),
+        (session.commandFamilyCalls.get(commandFamilyKey(toolName, commandFamily)) ?? 0) + 1
+      );
+      if (callId) session.callIdToToolCall.set(callId, { toolName, commandFamily });
       continue;
     }
 
@@ -455,14 +544,32 @@ async function parseCodexLogFile(
       const callId = asString(payload.call_id);
       const output = asString(payload.output);
       if (!callId || output === null) continue;
-      const toolName = session.callIdToToolName.get(callId);
-      if (!toolName) continue;
+      const toolCall = session.callIdToToolCall.get(callId);
+      if (!toolCall) continue;
+      const { toolName, commandFamily } = toolCall;
       session.toolOutputTokenEstimate.set(
         toolName,
         (session.toolOutputTokenEstimate.get(toolName) ?? 0) + estimateTokens(output)
       );
       if (isFailureOutput(output)) {
         session.toolFailures.set(toolName, (session.toolFailures.get(toolName) ?? 0) + 1);
+        const category = classifyFailure(output, toolName, commandFamily);
+        const key = failureReasonKey(session.cwd, toolName, commandFamily, category);
+        const currentReason = session.failureReasons.get(key) ?? {
+          cwd: session.cwd,
+          projectName: session.cwd ? projectName(session.cwd) : '(unknown)',
+          projectDisplayName: session.cwd ? projectName(session.cwd) : '(unknown)',
+          toolName,
+          commandFamily,
+          category,
+          label: failureCategoryLabel(category),
+          recommendation: failureCategoryRecommendation(category),
+          calls: 0,
+          failures: 0,
+        };
+        currentReason.failures += 1;
+        currentReason.calls = session.commandFamilyCalls.get(commandFamilyKey(toolName, commandFamily)) ?? currentReason.failures;
+        session.failureReasons.set(key, currentReason);
       }
     }
   }
@@ -514,10 +621,12 @@ function getSession(sessions: Map<string, SessionAccumulator>, id: string): Sess
     modelContextWindow: null,
     primaryRateLimitUsedPercent: null,
     secondaryRateLimitUsedPercent: null,
-    callIdToToolName: new Map(),
+    callIdToToolCall: new Map(),
     toolCalls: new Map(),
     toolFailures: new Map(),
     toolOutputTokenEstimate: new Map(),
+    commandFamilyCalls: new Map(),
+    failureReasons: new Map(),
   };
   sessions.set(id, next);
   return next;
@@ -546,6 +655,7 @@ function sessionToSummary(session: SessionAccumulator): CodexSessionUsageSummary
     durationMs: startedMs > 0 && endedMs >= startedMs ? endedMs - startedMs : null,
     toolCalls: Array.from(session.toolCalls.values()).reduce((sum, count) => sum + count, 0),
     toolFailures: Array.from(session.toolFailures.values()).reduce((sum, count) => sum + count, 0),
+    failureReasons: Array.from(session.failureReasons.values()).sort(sortFailureReasons),
   };
 }
 
@@ -594,6 +704,66 @@ function isFailureOutput(output: string): boolean {
   }
 
   return false;
+}
+
+function classifyFailure(
+  output: string,
+  toolName: string,
+  commandFamily: string
+): CodexFailureCategory {
+  const exitCode = exitCodeFromOutput(output);
+  const normalized = output.toLowerCase();
+
+  if (toolName !== 'exec_command') return 'tool_error';
+  if (/zsh:\d+:\s*no matches found|no matches found:/i.test(output)) return 'shell_glob';
+  if (/no such file or directory|os error 2|enoent|cannot access/i.test(output)) return 'missing_path';
+  if (commandFamily === 'rg' && exitCode === 1 && outputLooksEmpty(output)) return 'no_matches';
+  if (/timed out|timeout|cancelled|canceled|truncated|total output lines:|max_output_tokens|exceeded/i.test(output)) {
+    return 'timeout_or_truncated';
+  }
+  if (isTestOrBuildFailure(normalized, commandFamily)) return 'test_or_build_failure';
+  return 'command_error';
+}
+
+function exitCodeFromOutput(output: string): number | null {
+  const exitMatch = output.match(/Process exited with code (-?\d+)/);
+  return exitMatch ? Number(exitMatch[1]) : null;
+}
+
+function outputLooksEmpty(output: string): boolean {
+  return /Original token count:\s*0/i.test(output) || /Output:\s*$/i.test(output.trim());
+}
+
+function isTestOrBuildFailure(normalizedOutput: string, commandFamily: string): boolean {
+  const buildFamilies = new Set(['npm', 'bun', 'yarn', 'pnpm', 'tsc', 'vitest', 'jest']);
+  if (buildFamilies.has(commandFamily)) return true;
+  return /failed tests|test failed|build failed|typecheck failed|error ts\d+|command failed/.test(normalizedOutput);
+}
+
+function commandFamilyFromArguments(argumentsValue: unknown): string {
+  const fallback = 'exec_command';
+  const argsText = asString(argumentsValue);
+  if (!argsText) return fallback;
+  try {
+    const parsed = JSON.parse(argsText) as unknown;
+    if (!isRecord(parsed)) return fallback;
+    const cmd = asString(parsed.cmd);
+    if (!cmd) return fallback;
+    return commandFamilyFromCommand(cmd);
+  } catch {
+    return fallback;
+  }
+}
+
+function commandFamilyFromCommand(command: string): string {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return 'exec_command';
+  const firstToken = trimmed.match(/^(?:env\s+)?(?:NO_COLOR=\S+\s+|FORCE_COLOR=\S+\s+)*([^\s;&|]+)/)?.[1] ?? '';
+  const base = path.basename(firstToken.replace(/^['"]|['"]$/g, ''));
+  if (base === 'bunx') return 'bun';
+  if (base === 'npx') return 'npm';
+  if (base === 'python3') return 'python';
+  return allowedCommandFamilies.has(base) ? base : 'other';
 }
 
 function estimateTokens(text: string): number {
@@ -694,12 +864,12 @@ function buildRecommendations(
     });
   }
 
-  const hotspot = summary.failureHotspots.find((item) => item.failures >= 5)
-    ?? summary.failureHotspots.find((item) => item.failures >= 3 && item.failures / Math.max(item.calls, 1) >= 0.25);
-  if (hotspot) {
+  const failureReason = summary.topFailureReasons.find((item) => item.failures >= 5)
+    ?? summary.topFailureReasons.find((item) => item.failures >= 3 && item.failures / Math.max(item.calls, 1) >= 0.25);
+  if (failureReason) {
     recommendations.push({
       severity: 'warning',
-      message: `${hotspot.projectDisplayName} has repeated ${hotspot.toolName} failures; ask Codex to inspect before running commands or narrow the task.`,
+      message: `${failureReason.projectDisplayName} has repeated ${failureReason.label.toLowerCase()}; ${failureReason.recommendation}`,
     });
   }
 
@@ -745,4 +915,63 @@ function classifySession(session: CodexSessionUsageSummary): string {
   if (session.toolFailures >= 5) return 'high friction';
   if (session.totalTokens > 0 && session.toolFailures <= 1) return 'likely deep work';
   return 'normal';
+}
+
+function failureReasonKey(
+  cwd: string | null,
+  toolName: string,
+  commandFamily: string,
+  category: CodexFailureCategory
+): string {
+  return `${cwd ?? ''}::${toolName}::${commandFamily}::${category}`;
+}
+
+function commandFamilyKey(toolName: string, commandFamily: string): string {
+  return `${toolName}::${commandFamily}`;
+}
+
+function sortFailureReasons(a: CodexFailureReason, b: CodexFailureReason): number {
+  return b.failures - a.failures
+    || b.calls - a.calls
+    || a.projectDisplayName.localeCompare(b.projectDisplayName)
+    || a.commandFamily.localeCompare(b.commandFamily)
+    || a.category.localeCompare(b.category);
+}
+
+function failureCategoryLabel(category: CodexFailureCategory): string {
+  switch (category) {
+    case 'missing_path':
+      return 'Missing path';
+    case 'no_matches':
+      return 'No matches';
+    case 'shell_glob':
+      return 'Shell glob';
+    case 'test_or_build_failure':
+      return 'Test/build failure';
+    case 'timeout_or_truncated':
+      return 'Timeout/truncated';
+    case 'tool_error':
+      return 'Tool error';
+    case 'command_error':
+      return 'Command error';
+  }
+}
+
+function failureCategoryRecommendation(category: CodexFailureCategory): string {
+  switch (category) {
+    case 'missing_path':
+      return 'Check the repo layout or ask Codex to inspect files before searching.';
+    case 'no_matches':
+      return 'Adjust the search terms; this is usually low severity.';
+    case 'shell_glob':
+      return 'Quote globs or use rg --files before matching paths.';
+    case 'test_or_build_failure':
+      return 'Read the first failing test or build error before retrying.';
+    case 'timeout_or_truncated':
+      return 'Use narrower commands or lower output limits.';
+    case 'tool_error':
+      return 'Check the tool error and retry with a smaller scoped request.';
+    case 'command_error':
+      return 'Inspect the command result before retrying.';
+  }
 }
